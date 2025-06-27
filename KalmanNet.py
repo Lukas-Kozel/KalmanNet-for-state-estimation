@@ -25,22 +25,22 @@ class KalmanNet(nn.Module):
         # 3. Výstupní plně propojená vrstva (Fully connected linear output layer)
         self.output_layer = nn.Linear(hidden_dim, self.state_dim * self.obs_dim)
 
-        # Aktivační funkce
-        self.tanh = nn.Tanh()
-
     def forward(self, y_seq):
         """
         Provede filtraci celé sekvence měření y_seq.
         """
+        device = self.input_layer.weight.device  # Získání zařízení, na kterém jsou váhy
+
         batch_size, seq_len, _ = y_seq.shape
         
         # --- Inicializace proměnných ---
         # Aktuální odhad stavu (pro t-1)
-        x_hat = torch.zeros(batch_size, self.state_dim)
+        x_hat = torch.zeros(batch_size, self.state_dim, device=device)
         # Předchozí odhad stavu (pro t-2)
-        x_hat_previous = torch.zeros(batch_size, self.state_dim)
+        x_hat_previous = torch.zeros(batch_size, self.state_dim, device=device)
+
         # Skrytý stav GRU
-        h = torch.zeros(1, batch_size, self.hidden_dim)
+        h = torch.zeros(1, batch_size, self.hidden_dim,device=device)
 
         # Seznam pro ukládání výsledných odhadů
         x_hat_list = []
@@ -49,9 +49,13 @@ class KalmanNet(nn.Module):
         for t in range(seq_len):
             y_t = y_seq[:, t, :]  # Aktuální měření y_t
             
+            # Přesun parametrů modelu na správné zařízení
+            F = self.system_model.F.to(device)
+            H = self.system_model.H.to(device)
+
             #### Predikce #### 
-            x_hat_priori = (self.system_model.F @ x_hat.unsqueeze(-1)).squeeze(-1)
-            y_hat = (self.system_model.H @ x_hat_priori.unsqueeze(-1)).squeeze(-1)
+            x_hat_priori = (F @ x_hat.unsqueeze(-1)).squeeze(-1)
+            y_hat = (H @ x_hat_priori.unsqueeze(-1)).squeeze(-1)
             
             #### Výpočet vstupů pro síť #### 
             # Inovace měření: ∆y_t
@@ -63,7 +67,7 @@ class KalmanNet(nn.Module):
             nn_input = torch.cat([delta_x_hat, innovation], dim=1)
 
             ##### Průchod sítí pro výpočet Kalmanova zisku K_t ##### 
-            out_input_layer = self.tanh(self.input_layer(nn_input))
+            out_input_layer = self.input_layer(nn_input)
 
             # GRU očekává vstup (seq_len, batch_size, input_size)
             out_gru, h = self.gru(out_input_layer.unsqueeze(0), h)

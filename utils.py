@@ -18,7 +18,7 @@ def generate_data(system, num_trajectories, seq_len):
     return x_data, y_data
 
 # Trénovací funkce
-def train(model, train_loader, epochs=50, lr=1e-4, clip_grad=1.0):
+def train(model, train_loader,device, epochs=50, lr=1e-4, clip_grad=1.0):
     criterion = nn.MSELoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
@@ -26,6 +26,10 @@ def train(model, train_loader, epochs=50, lr=1e-4, clip_grad=1.0):
     model.train()
     for epoch in range(epochs):
         for x_true_batch, y_meas_batch in train_loader:
+
+            x_true_batch = x_true_batch.to(device)
+            y_meas_batch = y_meas_batch.to(device)
+
             optimizer.zero_grad()
             x_hat_batch = model(y_meas_batch)
             loss = criterion(x_hat_batch, x_true_batch)

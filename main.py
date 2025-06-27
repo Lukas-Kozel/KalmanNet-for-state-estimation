@@ -9,6 +9,9 @@ from LinearSystem import LinearSystem
 
 
 if __name__ == '__main__':
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Používané zařízení: {device}")
+
     # --- Reálný systém ---
     F_true = torch.tensor([[0.9]])
     H_true = torch.tensor([[1.0]])
@@ -37,13 +40,15 @@ if __name__ == '__main__':
     train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True)
     
     # --- Trénování modelu ---
-    knet = KalmanNet(sys_model)
-    train(knet, train_loader)
+    knet = KalmanNet(sys_model).to(device)
+    train(knet, train_loader,device)
     
     # --- Evaluace a vizualizace ---
     knet.eval()
     with torch.no_grad():
-        x_hat_knet_test = knet(y_test)
+        y_test_device = y_test.to(device)
+        x_hat_knet_test_device = knet(y_test_device)
+        x_hat_knet_test = x_hat_knet_test_device.cpu()
         
     mse_knet = nn.MSELoss()(x_hat_knet_test, x_test)
     
