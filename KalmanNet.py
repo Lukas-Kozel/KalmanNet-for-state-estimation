@@ -15,7 +15,7 @@ class KalmanNet(nn.Module):
         # Dimenze spojeného vstupního vektoru [∆x̂_{t-1}, ∆y_t]
         input_dim = self.state_dim + self.obs_dim
 
-        # --- Architektura sítě podle Obrázku 3 ---
+        # --- Architektura 1 sítě ---
         # 1. Vstupní plně propojená vrstva (Fully connected linear input layer)
         self.input_layer = nn.Linear(input_dim, hidden_dim)
 
@@ -49,11 +49,11 @@ class KalmanNet(nn.Module):
         for t in range(seq_len):
             y_t = y_seq[:, t, :]  # Aktuální měření y_t
             
-            # --- Krok 1: Predikce (používáme náš nepřesný model) ---
+            #### Predikce #### 
             x_hat_priori = (self.system_model.F @ x_hat.unsqueeze(-1)).squeeze(-1)
             y_hat = (self.system_model.H @ x_hat_priori.unsqueeze(-1)).squeeze(-1)
             
-            # --- Krok 2: Výpočet vstupů pro síť ---
+            #### Výpočet vstupů pro síť #### 
             # Inovace měření: ∆y_t
             innovation = y_t - y_hat
             # Změna odhadu stavu: ∆x̂_{t-1}
@@ -62,16 +62,18 @@ class KalmanNet(nn.Module):
             # Spojení vstupů do jednoho vektoru
             nn_input = torch.cat([delta_x_hat, innovation], dim=1)
 
-            # --- Krok 3: Průchod sítí pro výpočet Kalmanova zisku K_t ---
+            ##### Průchod sítí pro výpočet Kalmanova zisku K_t ##### 
             out_input_layer = self.tanh(self.input_layer(nn_input))
+
             # GRU očekává vstup (seq_len, batch_size, input_size)
             out_gru, h = self.gru(out_input_layer.unsqueeze(0), h)
+
             out_output_layer = self.output_layer(out_gru.squeeze(0))
             
             # Přetvarování výstupu na matici Kalmanova zisku
             K = out_output_layer.reshape(batch_size, self.state_dim, self.obs_dim)
 
-            # --- Krok 4: Aktualizace odhadu stavu ---
+            #### Aktualizace odhadu stavu ####
             correction = (K @ innovation.unsqueeze(-1)).squeeze(-1)
             
             # Aktualizace proměnných pro další krok
