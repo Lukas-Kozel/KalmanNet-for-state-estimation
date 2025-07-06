@@ -25,6 +25,9 @@ def train(model, train_loader,device, epochs=50, lr=1e-4, clip_grad=1.0):
     print("Zahajuji trénování KalmanNetu...")
     model.train()
     for epoch in range(epochs):
+        epoch_loss = 0.0
+        total_norm = 0.0
+
         for x_true_batch, y_meas_batch in train_loader:
 
             x_true_batch = x_true_batch.to(device)
@@ -32,12 +35,18 @@ def train(model, train_loader,device, epochs=50, lr=1e-4, clip_grad=1.0):
 
             optimizer.zero_grad()
             x_hat_batch = model(y_meas_batch)
+            
             loss = criterion(x_hat_batch, x_true_batch)
+
+
             loss.backward()
-
-            nn.utils.clip_grad_norm_(model.parameters(), clip_grad)  # Ořezání gradientů kvůli tzv exploding gradients
-
+            total_norm = nn.utils.clip_grad_norm_(model.parameters(), clip_grad)
+            
             optimizer.step()
-        if (epoch + 1) % 10 == 0:
-            print(f'Epocha [{epoch+1}/{epochs}], Chyba (Loss): {loss.item():.6f}')
+            epoch_loss += loss.item()
+
+        avg_loss = epoch_loss / len(train_loader)
+
+        if (epoch + 1) % 5 == 0:
+            print(f'Epocha [{epoch+1}/{epochs}], Prům. chyba: {avg_loss:.6f}, Celková norma grad.: {total_norm:.4f}')
     print("Trénování dokončeno.")
