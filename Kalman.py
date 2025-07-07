@@ -67,7 +67,3 @@ class KalmanFilter:
             stored_data['P_predict'][t] = P_predict
 
         return stored_data
-    
-    def compute_MSE(self, x_seq):
-        mse = torch.mean((x_seq - self.Ex0.unsqueeze(0)) ** 2, dim=0)
-        return mse
