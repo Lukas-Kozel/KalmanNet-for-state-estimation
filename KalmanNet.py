@@ -2,20 +2,26 @@ import torch
 import torch.nn as nn
 
 class KalmanNet(nn.Module):
-    def __init__(self, system_model, hidden_dim=128):
+    """    KalmanNet Architektura pro nelineární Kalmanův filtr.
+    """
+    def __init__(self, system_model,  hidden_size_multiplier=20):
         super(KalmanNet, self).__init__()
         
         self.system_model = system_model
         self.state_dim = system_model.state_dim
         self.obs_dim = system_model.obs_dim
-        self.hidden_dim = hidden_dim
+
+
+        # heuristika o velikosti GRU z článku
+        moments_dim = self.state_dim*self.state_dim + self.obs_dim*self.obs_dim
+        self.hidden_dim = moments_dim * hidden_size_multiplier
 
         # Dimenze vstupu je stále stejná: dim(F4) + dim(F2)
         input_dim = self.state_dim + self.obs_dim
 
-        self.input_layer = nn.Linear(input_dim, hidden_dim)
-        self.gru = nn.GRU(input_size=hidden_dim, hidden_size=hidden_dim)
-        self.output_layer = nn.Linear(hidden_dim, self.state_dim * self.obs_dim)
+        self.input_layer = nn.Linear(input_dim, self.hidden_dim)
+        self.gru = nn.GRU(input_size=self.hidden_dim, hidden_size=self.hidden_dim)
+        self.output_layer = nn.Linear(self.hidden_dim, self.state_dim * self.obs_dim)
 
         # Vstup pro f bude mít tvar (batch, state_dim), pro h také.
         self.f_vmap = torch.vmap(self.system_model.f, in_dims=(0,))
