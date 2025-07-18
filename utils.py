@@ -1,10 +1,15 @@
 import torch
 import torch.nn as nn
+from copy import deepcopy
 
 # Funkce pro generování dat
 def generate_data(system, num_trajectories, seq_len):
-    x_data = torch.zeros(num_trajectories, seq_len, system.state_dim)
-    y_data = torch.zeros(num_trajectories, seq_len, system.obs_dim)
+
+    # Zjištění zařízení, na kterém systém pracuje
+    device = system.Ex0.device
+
+    x_data = torch.zeros(num_trajectories, seq_len, system.state_dim,device=device)
+    y_data = torch.zeros(num_trajectories, seq_len, system.obs_dim,device=device)
     for i in range(num_trajectories):
         x = system.get_initial_state()
         # x = system.get_deterministic_initial_state()  # Použijeme fixní počáteční stav
@@ -50,3 +55,90 @@ def train(model, train_loader,device, epochs=50, lr=1e-4, clip_grad=1.0):
         if (epoch + 1) % 5 == 0:
             print(f'Epocha [{epoch+1}/{epochs}], Prům. chyba: {avg_loss:.6f}, Celková norma grad.: {total_norm:.4f}')
     print("Trénování dokončeno.")
+
+def train_with_scheduler(model, train_loader, val_loader, device, 
+                         epochs=200, lr=1e-3, clip_grad=1.0, 
+                         early_stopping_patience=20):
+    """
+    Trénovací funkce s dynamickým learning rate a early stopping.
+    - Používá ReduceLROnPlateau scheduler ke snížení LR, když se validační 
+      chyba přestane zlepšovat.
+    - Používá Early Stopping k ukončení tréninku, aby se zabránilo přeučení.
+    - Vrací model s nejlepšími váhami dosaženými na validační sadě.
+    """
+    criterion = nn.MSELoss()
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    
+    # Scheduler, který sleduje validační chybu
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, 
+        mode='min',      # Chceme minimalizovat loss
+        factor=0.5,      # Sníží LR na polovinu
+        patience=10,     # Počká 10 epoch bez zlepšení validační chyby
+        verbose=True     # Vypíše zprávu, když se LR sníží
+    )
+
+    print("Zahajuji trénování KalmanNetu s dynamickým LR a Early Stopping...")
+    
+    best_val_loss = float('inf')
+    epochs_no_improve = 0
+    best_model_state = None
+
+    for epoch in range(epochs):
+        # --- Trénovací fáze ---
+        model.train()
+        train_loss = 0.0
+        for x_true_batch, y_meas_batch in train_loader:
+            x_true_batch = x_true_batch.to(device)
+            y_meas_batch = y_meas_batch.to(device)
+
+            optimizer.zero_grad()
+            x_hat_batch = model(y_meas_batch)
+            loss = criterion(x_hat_batch, x_true_batch)
+            loss.backward()
+            nn.utils.clip_grad_norm_(model.parameters(), clip_grad)
+            optimizer.step()
+            train_loss += loss.item()
+        
+        avg_train_loss = train_loss / len(train_loader)
+
+        # --- Validační fáze ---
+        model.eval()
+        val_loss = 0.0
+        with torch.no_grad():
+            for x_true_val, y_meas_val in val_loader:
+                x_true_val = x_true_val.to(device)
+                y_meas_val = y_meas_val.to(device)
+                x_hat_val = model(y_meas_val)
+                loss = criterion(x_hat_val, x_true_val)
+                val_loss += loss.item()
+        
+        avg_val_loss = val_loss / len(val_loader)
+        
+        # --- Krok scheduleru a Early Stopping ---
+        scheduler.step(avg_val_loss)
+
+        if (epoch + 1) % 5 == 0:
+            print(f'Epocha [{epoch+1}/{epochs}], Train Loss: {avg_train_loss:.6f}, Val Loss: {avg_val_loss:.6f}')
+        
+        # Logika pro Early Stopping
+        if avg_val_loss < best_val_loss:
+            best_val_loss = avg_val_loss
+            epochs_no_improve = 0
+            # Uložíme si stav nejlepšího modelu
+            best_model_state = deepcopy(model.state_dict())
+        else:
+            epochs_no_improve += 1
+
+        if epochs_no_improve >= early_stopping_patience:
+            print(f"\nEarly stopping spuštěno po {epoch + 1} epochách.")
+            break
+            
+    print("Trénování dokončeno.")
+    
+    # Načteme váhy nejlepšího modelu, který jsme našli
+    if best_model_state:
+        print(f"Načítám nejlepší model s validační chybou: {best_val_loss:.6f}")
+        model.load_state_dict(best_model_state)
+        
+    return model
