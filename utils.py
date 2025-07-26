@@ -43,7 +43,6 @@ def train(model, train_loader,device, epochs=50, lr=1e-4, clip_grad=1.0):
             
             loss = criterion(x_hat_batch, x_true_batch)
 
-
             loss.backward()
             total_norm = nn.utils.clip_grad_norm_(model.parameters(), clip_grad)
             
@@ -59,33 +58,22 @@ def train(model, train_loader,device, epochs=50, lr=1e-4, clip_grad=1.0):
 def train_with_scheduler(model, train_loader, val_loader, device, 
                          epochs=200, lr=1e-3, clip_grad=1.0, 
                          early_stopping_patience=20):
-    """
-    Trénovací funkce s dynamickým learning rate a early stopping.
-    - Používá ReduceLROnPlateau scheduler ke snížení LR, když se validační 
-      chyba přestane zlepšovat.
-    - Používá Early Stopping k ukončení tréninku, aby se zabránilo přeučení.
-    - Vrací model s nejlepšími váhami dosaženými na validační sadě.
-    """
     criterion = nn.MSELoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     
-    # Scheduler, který sleduje validační chybu
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, 
-        mode='min',      # Chceme minimalizovat loss
-        factor=0.5,      # Sníží LR na polovinu
-        patience=10,     # Počká 10 epoch bez zlepšení validační chyby
-        verbose=True     # Vypíše zprávu, když se LR sníží
+        mode='min',
+        factor=0.5,
+        patience=10,
+        verbose=True
     )
 
-    print("Zahajuji trénování KalmanNetu s dynamickým LR a Early Stopping...")
-    
     best_val_loss = float('inf')
     epochs_no_improve = 0
     best_model_state = None
 
     for epoch in range(epochs):
-        # --- Trénovací fáze ---
         model.train()
         train_loss = 0.0
         for x_true_batch, y_meas_batch in train_loader:
@@ -102,7 +90,6 @@ def train_with_scheduler(model, train_loader, val_loader, device,
         
         avg_train_loss = train_loss / len(train_loader)
 
-        # --- Validační fáze ---
         model.eval()
         val_loss = 0.0
         with torch.no_grad():
@@ -115,17 +102,14 @@ def train_with_scheduler(model, train_loader, val_loader, device,
         
         avg_val_loss = val_loss / len(val_loader)
         
-        # --- Krok scheduleru a Early Stopping ---
         scheduler.step(avg_val_loss)
 
         if (epoch + 1) % 5 == 0:
             print(f'Epocha [{epoch+1}/{epochs}], Train Loss: {avg_train_loss:.6f}, Val Loss: {avg_val_loss:.6f}')
         
-        # Logika pro Early Stopping
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
             epochs_no_improve = 0
-            # Uložíme si stav nejlepšího modelu
             best_model_state = deepcopy(model.state_dict())
         else:
             epochs_no_improve += 1
@@ -136,7 +120,6 @@ def train_with_scheduler(model, train_loader, val_loader, device,
             
     print("Trénování dokončeno.")
     
-    # Načteme váhy nejlepšího modelu, který jsme našli
     if best_model_state:
         print(f"Načítám nejlepší model s validační chybou: {best_val_loss:.6f}")
         model.load_state_dict(best_model_state)
