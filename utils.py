@@ -2,6 +2,8 @@ import torch
 import torch.nn as nn
 from copy import deepcopy
 
+from BayesianKalmanNet import BayesianKalmanNet
+
 # Funkce pro generování dat
 def generate_data(system, num_trajectories, seq_len):
 
@@ -74,6 +76,7 @@ def train_with_scheduler(model, train_loader, val_loader, device,
     best_model_state = None
 
     for epoch in range(epochs):
+        # --- Trénovací fáze ---
         model.train()
         train_loss = 0.0
         for x_true_batch, y_meas_batch in train_loader:
@@ -81,7 +84,12 @@ def train_with_scheduler(model, train_loader, val_loader, device,
             y_meas_batch = y_meas_batch.to(device)
 
             optimizer.zero_grad()
+
             x_hat_batch = model(y_meas_batch)
+
+            if isinstance(model,BayesianKalmanNet):
+                x_hat_batch = x_hat_batch.squeeze(0)
+
             loss = criterion(x_hat_batch, x_true_batch)
             loss.backward()
             nn.utils.clip_grad_norm_(model.parameters(), clip_grad)
@@ -90,13 +98,18 @@ def train_with_scheduler(model, train_loader, val_loader, device,
         
         avg_train_loss = train_loss / len(train_loader)
 
+        # --- Validační fáze ---
         model.eval()
         val_loss = 0.0
         with torch.no_grad():
             for x_true_val, y_meas_val in val_loader:
                 x_true_val = x_true_val.to(device)
                 y_meas_val = y_meas_val.to(device)
+
+
                 x_hat_val = model(y_meas_val)
+                if isinstance(model, BayesianKalmanNet):
+                    x_hat_val = x_hat_val.squeeze(0)
                 loss = criterion(x_hat_val, x_true_val)
                 val_loss += loss.item()
         
@@ -125,3 +138,4 @@ def train_with_scheduler(model, train_loader, val_loader, device,
         model.load_state_dict(best_model_state)
         
     return model
+
