@@ -262,17 +262,18 @@ def train_bayesian_kalmanNet(model, train_loader, val_loader, device, epochs=200
 
 def train_bkn_article(model, train_loader, val_loader, device, epochs=200, lr=1e-4, clip_grad=1.0, early_stopping_patience=20):
     """
-    Trénovací funkce pro BayesianKalmanNet, která implementuje loss funkci
-    přesně podle článku (rovnice 20, 22, 23, 24).
+    Finální a kompletní verze trénovací funkce pro BayesianKalmanNet.
+    Implementuje loss funkci z článku s použitím .detach() pro stabilní trénink
+    a správnou kalibraci nejistoty.
     """
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5, verbose=True)
 
-    # Hyperparametry z článku
-    J_samples = 5  # Počet MC vzorků, lze experimentovat (např. 3-10)
-    beta = 0.9     # Váha mezi L_l2 a L_M2 v rovnici (20)
-    c1 = 1e-5      # Regularizační hyperparametr C₁, začněte s malou hodnotou
-    c2 = 1e-5      # Regularizační hyperparametr C₂, začněte s malou hodnotou
+    # Hyperparametry, které by měly fungovat lépe s .detach()
+    J_samples = 5
+    beta = 0.7  # S .detach() by mělo fungovat i vyvážené beta
+    c1 = 1e-8
+    c2 = 1e-8
 
     best_val_loss = float('inf')
     epochs_no_improve = 0
@@ -291,25 +292,25 @@ def train_bkn_article(model, train_loader, val_loader, device, epochs=200, lr=1e
             # --- Získání ensemblu J predikcí ---
             ensemble_x_hat = torch.stack([model(y_meas_batch) for _ in range(J_samples)], dim=0)
             
-            # --- Implementace Rovnice (22a): Průměrný odhad ---
+            # Průměrný odhad
             x_hat_mean = ensemble_x_hat.mean(dim=0)
 
-            # --- Implementace Rovnice (22b): Odhad kovariance Σ_hat ---
+            # Odhad kovariance
             diff = ensemble_x_hat - x_hat_mean
             diff_permuted = diff.permute(1, 2, 0, 3) # [batch, seq, J, state_dim]
             Sigma_hat = torch.matmul(diff_permuted.unsqueeze(-1), diff_permuted.unsqueeze(-2)).mean(dim=2)
 
-            # --- Implementace Rovnice (20): L_EMP(θ) ---
+            # --- VÝPOČET KOMPONENT LOSS FUNKCE ---
             
-            # Člen L_l2(θ): MSE mezi průměrným odhadem a skutečností
+            # Člen L_l2(θ) - počítá se s připojeným tenzorem, aby se model učil přesnosti
             loss_l2 = F.mse_loss(x_hat_mean, x_true_batch)
 
-            # Člen L_M2(θ), založený na rovnici (19)
-            # Skutečná chyba e = x_true - x_hat_mean
-            e = (x_true_batch - x_hat_mean).unsqueeze(-1)
-            # Vytvoření empirické kovariance e*e^T
-            flat_e = e.flatten(0, 1)
-            empirical_cov_flat = torch.bmm(flat_e, flat_e.transpose(1, 2))
+            # --- KLÍČOVÁ ZMĚNA S .detach() ---
+            # Člen L_M2(θ) - pro výpočet cíle (empirical_cov) použijeme odpojený tenzor
+            # Tím zabráníme tomu, aby snaha o minimalizaci loss_l2 ovlivňovala cíl pro loss_m2.
+            e_for_m2 = (x_true_batch - x_hat_mean.detach()).unsqueeze(-1)
+            flat_e_for_m2 = e_for_m2.flatten(0, 1)
+            empirical_cov_flat = torch.bmm(flat_e_for_m2, flat_e_for_m2.transpose(1, 2))
             empirical_cov = empirical_cov_flat.reshape_as(Sigma_hat)
             
             loss_m2 = F.mse_loss(Sigma_hat, empirical_cov)
@@ -317,10 +318,10 @@ def train_bkn_article(model, train_loader, val_loader, device, epochs=200, lr=1e
             # Celková data-matching loss
             data_matching_loss = (1 - beta) * loss_l2 + beta * loss_m2
 
-            # --- Implementace Regularizace z rovnice (23) ---
+            # Regularizační člen
             regularization_loss = calculate_regularization_loss(model, c1, c2)
 
-            # --- Implementace hlavní rovnice (23): Celková loss ---
+            # Celková loss
             total_loss = data_matching_loss + regularization_loss
             
             total_loss.backward()
@@ -330,31 +331,32 @@ def train_bkn_article(model, train_loader, val_loader, device, epochs=200, lr=1e
             
         avg_train_loss = train_loss / len(train_loader)
         
-        # --- Validační fáze (následuje stejnou logiku) ---
-        model.train() # I zde necháme aktivní dropout pro výpočet validační loss
+        # --- Validační fáze (se stejnou logikou) ---
+        model.train() # I zde necháme aktivní dropout pro konzistentní výpočet
         val_loss = 0.0
         with torch.no_grad():
             for x_true_val, y_meas_val in val_loader:
                 x_true_val = x_true_val.to(device)
                 y_meas_val = y_meas_val.to(device)
                 
-                # Získání ensemblu pro validační data
                 ensemble_x_hat_val = torch.stack([model(y_meas_val) for _ in range(J_samples)], dim=0)
                 
-                # Výpočet validační loss (bez regularizace pro zjednodušení a rychlejší výpočet)
-                # Scheduler a early stopping by měly reagovat na to, jak dobře model plní hlavní úkol.
                 x_hat_mean_val = ensemble_x_hat_val.mean(dim=0)
                 diff_val = ensemble_x_hat_val - x_hat_mean_val
                 diff_permuted_val = diff_val.permute(1, 2, 0, 3)
                 Sigma_hat_val = torch.matmul(diff_permuted_val.unsqueeze(-1), diff_permuted_val.unsqueeze(-2)).mean(dim=2)
                 
                 loss_l2_val = F.mse_loss(x_hat_mean_val, x_true_val)
-                e_val = (x_true_val - x_hat_mean_val).unsqueeze(-1)
+
+                # Zde není .detach() technicky nutné, protože nepočítáme gradienty,
+                # ale pro 100% shodu logiky s tréninkem ho můžeme použít.
+                e_val = (x_true_val - x_hat_mean_val.detach()).unsqueeze(-1)
                 flat_e_val = e_val.flatten(0, 1)
                 emp_cov_flat_val = torch.bmm(flat_e_val, flat_e_val.transpose(1, 2))
                 emp_cov_val = emp_cov_flat_val.reshape_as(Sigma_hat_val)
                 loss_m2_val = F.mse_loss(Sigma_hat_val, emp_cov_val)
                 
+                # Pro validační loss se obvykle regularizace nezahrnuje
                 total_val_loss_sample = (1 - beta) * loss_l2_val + beta * loss_m2_val
                 val_loss += total_val_loss_sample.item()
 
