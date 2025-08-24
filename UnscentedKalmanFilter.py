@@ -63,8 +63,8 @@ class UnscentedKalmanFilter:
 
 
     def apply_filter(self, y_seq):
+        output_dict = {'x_filtered': [], 'P_filtered': []}
         seq_len = y_seq.shape[0]
-        x_est_list = []
         
         x_est = self.Ex0.clone()
         P_est = self.P0.clone()
@@ -73,6 +73,7 @@ class UnscentedKalmanFilter:
             x_predict, P_predict = self.predict_step(x_est, P_est)
             y_t = y_seq[t].unsqueeze(-1)
             x_est, P_est, _ = self.update_step(x_predict, P_predict, y_t)
-            x_est_list.append(x_est.squeeze())
+            output_dict['x_filtered'].append(x_est.squeeze())
+            output_dict['P_filtered'].append(P_est.squeeze())
 
-        return {'x_filtered': torch.stack(x_est_list)}
+        return output_dict
