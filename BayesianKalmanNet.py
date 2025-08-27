@@ -83,30 +83,48 @@ class BayesianKalmanNet(nn.Module):
     
     def predict(self, y_seq, num_samples=20):
         """
-        Provádí Monte Carlo inferenci pro kvantifikaci nejistoty.
+        Monte Carlo predikce.
         """
-        # Důležité: Aktivujeme dropout vrstvy, i když je model v eval módu
-        self.train() 
+        self.train() # aktivace dropoutu 
         
         with torch.no_grad():
-            # Získáme `num_samples` různých odhadů
+            # Tvar: [num_samples, batch_size, seq_len, state_dim]
             ensemble_x_hat = torch.stack([self.forward(y_seq) for _ in range(num_samples)], dim=0)
 
-        # Vrátíme model zpět do eval módu (vypne dropout)
-        self.eval() 
+        self.eval() # vypnutí dropoutu 
         
-        # Výpočet průměru (odhad stavu)
-        x_hat_mean = ensemble_x_hat.mean(dim=0)
+        _, batch_size, seq_len, state_dim = ensemble_x_hat.shape
         
-        # Výpočet kovariance (odhad nejistoty)
-        diff = ensemble_x_hat - x_hat_mean
-        # U 1D stavu je to jen variance, ale pro obecnost použijeme maticový součin
-        if self.state_dim == 1:
-            # Pro 1D případ je variance jednodušší a rychlejší
-            sigma_hat = ensemble_x_hat.var(dim=0)
-        else:
-            # Pro N-D případ
-            diff_permuted = diff.permute(1, 2, 0, 3) # [batch, seq, J, state_dim]
-            sigma_hat = torch.matmul(diff_permuted.unsqueeze(-1), diff_permuted.unsqueeze(-2)).mean(dim=2)
+        # --- PŘÍPRAVA VÝSTUPNÍCH TENZORŮ ---
+        # Tenzor pro uložení finálních průměrných odhadů
+        x_hat_mean = torch.zeros((batch_size, seq_len, state_dim), device=self.device)
+        # Tenzor pro uložení finálních odhadů kovariance
+        sigma_hat = torch.zeros((batch_size, seq_len, state_dim, state_dim), device=self.device)
+
+        # --- SMYČKA PŘES JEDNOTLIVÉ TRAJEKTORIE V DÁVCE ---
+        for i in range(batch_size):
+            # --- SMYČKA PŘES JEDNOTLIVÉ ČASOVÉ KROKY ---
+            for t in range(seq_len):
+                
+                # Získáme ensemble odhadů pro jeden konkrétní bod (i, t)
+                # Tvar: [num_samples, state_dim]
+                ensemble_at_t = ensemble_x_hat[:, i, t, :]
+                
+                # 1. Výpočet průměru (odhad stavu) pro tento bod
+                mean_at_t = torch.mean(ensemble_at_t, dim=0)
+                x_hat_mean[i, t, :] = mean_at_t
+                
+                # 2. Výpočet kovariance (odhad nejistoty) pro tento bod
+                cov_at_t = torch.zeros((state_dim, state_dim), device=self.device)
+                for j in range(num_samples):
+                    diff = ensemble_at_t[j] - mean_at_t
+                    cov_at_t += torch.outer(diff, diff)
+                cov_at_t /= num_samples
+                sigma_hat[i, t, :, :] = cov_at_t
         
+        # Pokud je stav 1D, vrátíme varianci jako vektor pro snazší plotování
+        if state_dim == 1:
+            # Tvar: [batch_size, seq_len, 1]
+            sigma_hat = sigma_hat.squeeze(-1)
+
         return x_hat_mean, sigma_hat

@@ -171,116 +171,120 @@ def calculate_regularization_loss(model,c1,c2):
             reg_loss += term2
     return reg_loss
 
-def train_bayesian_kalmanNet(model, train_loader, val_loader, device, epochs=200, lr=1e-3, clip_grad=1, early_stopping_patience=20, num_samples_train=5):
-    """
-    Trénovací funkce pro BayesianKalmanNet, která používá vestavěnou 
-    PyTorch nn.GaussianNLLLoss pro optimální kalibraci nejistoty.
-    """
-    criterion = nn.GaussianNLLLoss(full=True,eps=1e-6,reduction='mean')
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer=optimizer,mode='min',factor=0.5,patience=10,verbose=True)
+# def train_bayesian_kalmanNet(model, train_loader, val_loader, device, epochs=200, lr=1e-3, clip_grad=1, early_stopping_patience=20, num_samples_train=5):
+#     """
+#     Trénovací funkce pro BayesianKalmanNet, která používá vestavěnou 
+#     PyTorch nn.GaussianNLLLoss pro optimální kalibraci nejistoty.
+#     """
+#     criterion = nn.GaussianNLLLoss(full=True,eps=1e-6,reduction='mean')
+#     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+#     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer=optimizer,mode='min',factor=0.5,patience=10,verbose=True)
 
-    best_val_loss = float('inf')
-    epochs_no_improve = 0
-    best_model_state = None
+#     best_val_loss = float('inf')
+#     epochs_no_improve = 0
+#     best_model_state = None
 
-    for epoch in range(epochs):
-        model.train() # kvuli aktivnimu dropoutu
-        train_loss=0.0
+#     for epoch in range(epochs):
+#         model.train() # kvuli aktivnimu dropoutu
+#         train_loss=0.0
 
-        for x_true_batch,y_meas_batch in train_loader:
-            x_true_batch = x_true_batch.to(device)
-            y_meas_batch = y_meas_batch.to(device)
+#         for x_true_batch,y_meas_batch in train_loader:
+#             x_true_batch = x_true_batch.to(device)
+#             y_meas_batch = y_meas_batch.to(device)
 
-            optimizer.zero_grad()
+#             optimizer.zero_grad()
 
-            ensemble_runs = []
-            for _ in range(num_samples_train):
-                one_run = model(y_meas_batch)
-                ensemble_runs.append(one_run)
-            ensemble_x_hat = torch.stack(ensemble_runs, dim=0)
+#             ensemble_runs = []
+#             for _ in range(num_samples_train):
+#                 one_run = model(y_meas_batch)
+#                 ensemble_runs.append(one_run)
+#             ensemble_x_hat = torch.stack(ensemble_runs, dim=0)
 
-            x_hat_mean = ensemble_x_hat.mean(dim=0)
-            variance_floor = 1e-8 # Malá, ale nenulová minimální variance
-            x_hat_var = ensemble_x_hat.var(dim=0).clamp(min=variance_floor)
-            print("variance: ", x_hat_var)
-            loss = criterion(x_hat_mean, x_true_batch, x_hat_var)
+#             x_hat_mean = ensemble_x_hat.mean(dim=0)
+#             variance_floor = 1e-8 # Malá, ale nenulová minimální variance
+#             x_hat_var = ensemble_x_hat.var(dim=0).clamp(min=variance_floor)
+#             print("variance: ", x_hat_var)
+#             loss = criterion(x_hat_mean, x_true_batch, x_hat_var)
 
-            loss.backward()
-            nn.utils.clip_grad_norm_(model.parameters(), clip_grad)
-            optimizer.step()
-            train_loss += loss.item()
+#             loss.backward()
+#             nn.utils.clip_grad_norm_(model.parameters(), clip_grad)
+#             optimizer.step()
+#             train_loss += loss.item()
 
-        avg_train_loss = train_loss / len(train_loader)
+#         avg_train_loss = train_loss / len(train_loader)
 
-        # --- Validační fáze ---
-        # model.eval()
-        val_loss = 0.0
-        with torch.no_grad():
-            for x_true_val, y_meas_val in val_loader:
-                x_true_val = x_true_val.to(device)
-                y_meas_val = y_meas_val.to(device)
+#         # --- Validační fáze ---
+#         # model.eval()
+#         val_loss = 0.0
+#         with torch.no_grad():
+#             for x_true_val, y_meas_val in val_loader:
+#                 x_true_val = x_true_val.to(device)
+#                 y_meas_val = y_meas_val.to(device)
 
-                ensemble_runs_val = [model(y_meas_val) for _ in range(num_samples_train)]
-                ensemble_x_hat_val = torch.stack(ensemble_runs_val, dim=0)
+#                 ensemble_runs_val = [model(y_meas_val) for _ in range(num_samples_train)]
+#                 ensemble_x_hat_val = torch.stack(ensemble_runs_val, dim=0)
                 
-                x_hat_mean_val = ensemble_x_hat_val.mean(dim=0)
-                x_hat_var_val = ensemble_x_hat_val.var(dim=0)
+#                 x_hat_mean_val = ensemble_x_hat_val.mean(dim=0)
+#                 x_hat_var_val = ensemble_x_hat_val.var(dim=0)
                 
-                loss = criterion(input=x_hat_mean_val, target=x_true_val, var=x_hat_var_val)
-                val_loss += loss.item()
+#                 loss = criterion(input=x_hat_mean_val, target=x_true_val, var=x_hat_var_val)
+#                 val_loss += loss.item()
 
-        avg_val_loss = val_loss / len(val_loader)
+#         avg_val_loss = val_loss / len(val_loader)
 
-        scheduler.step(avg_val_loss)
+#         scheduler.step(avg_val_loss)
 
-        if (epoch + 1) % 5 == 0:
-            print(f'Epocha [{epoch+1}/{epochs}], Train Loss: {avg_train_loss:.6f}, Val Loss: {avg_val_loss:.6f}')
+#         if (epoch + 1) % 5 == 0:
+#             print(f'Epocha [{epoch+1}/{epochs}], Train Loss: {avg_train_loss:.6f}, Val Loss: {avg_val_loss:.6f}')
 
-        if avg_val_loss < best_val_loss:
-            best_val_loss = avg_val_loss
-            epochs_no_improve = 0
-            best_model_state = deepcopy(model.state_dict())
-            model.eval()
-            best_model_state = deepcopy(model.state_dict())
-            model.train() 
-        else:
-            epochs_no_improve += 1
+#         if avg_val_loss < best_val_loss:
+#             best_val_loss = avg_val_loss
+#             epochs_no_improve = 0
+#             best_model_state = deepcopy(model.state_dict())
+#             model.eval()
+#             best_model_state = deepcopy(model.state_dict())
+#             model.train() 
+#         else:
+#             epochs_no_improve += 1
 
-        if epochs_no_improve >= early_stopping_patience:
-            print(f"\nEarly stopping spuštěno po {epoch + 1} epochách.")
-            break
+#         if epochs_no_improve >= early_stopping_patience:
+#             print(f"\nEarly stopping spuštěno po {epoch + 1} epochách.")
+#             break
 
-    print("Trénování dokončeno.")
+#     print("Trénování dokončeno.")
 
-    if best_model_state:
-        print(f"Načítám nejlepší model s validační chybou: {best_val_loss:.6f}")
-        model.load_state_dict(best_model_state)
+#     if best_model_state:
+#         print(f"Načítám nejlepší model s validační chybou: {best_val_loss:.6f}")
+#         model.load_state_dict(best_model_state)
 
-    model.eval()
-    return model
+#     model.eval()
+#     return model
 
-def train_bkn_article(model, train_loader, val_loader, device, epochs=200, lr=1e-4, clip_grad=1.0, early_stopping_patience=20):
+def train_bkn(model, train_loader, val_loader, device, 
+              epochs=200, lr=1e-4, clip_grad=1.0, early_stopping_patience=20, 
+              J_samples=10, 
+              initial_beta=0.01, final_beta=0.9, beta_warmup_epochs=50,
+              c1=1e-8, c2=1e-8):
     """
-    Finální a kompletní verze trénovací funkce pro BayesianKalmanNet.
-    Implementuje loss funkci z článku s použitím .detach() pro stabilní trénink
-    a správnou kalibraci nejistoty.
+    Funkce pro trénování BayesianKalmanNet.
     """
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5, verbose=True)
-
-    # Hyperparametry, které by měly fungovat lépe s .detach()
-    J_samples = 5
-    beta = 0.7  # S .detach() by mělo fungovat i vyvážené beta
-    c1 = 1e-8
-    c2 = 1e-8
 
     best_val_loss = float('inf')
     epochs_no_improve = 0
     best_model_state = None
     
     for epoch in range(epochs):
-        model.train() # KLÍČOVÉ: Aktivní dropout pro Monte Carlo sampling
+
+        if epoch < beta_warmup_epochs:
+            # Lineární nárůst od initial_beta k final_beta
+            beta = initial_beta + (final_beta - initial_beta) * (epoch / beta_warmup_epochs)
+        else:
+            # Po warm-up fázi zůstane beta na finální hodnotě
+            beta = final_beta
+
+        model.train() # dropout musí být aktivní
         train_loss = 0.0
         
         for x_true_batch, y_meas_batch in train_loader:
@@ -290,39 +294,46 @@ def train_bkn_article(model, train_loader, val_loader, device, epochs=200, lr=1e
             optimizer.zero_grad()
             
             # --- Získání ensemblu J predikcí ---
+            # Tvar: [J_samples, batch_size, seq_len, state_dim]
             ensemble_x_hat = torch.stack([model(y_meas_batch) for _ in range(J_samples)], dim=0)
             
-            # Průměrný odhad
-            x_hat_mean = ensemble_x_hat.mean(dim=0)
-
-            # Odhad kovariance
-            diff = ensemble_x_hat - x_hat_mean
-            diff_permuted = diff.permute(1, 2, 0, 3) # [batch, seq, J, state_dim]
-            Sigma_hat = torch.matmul(diff_permuted.unsqueeze(-1), diff_permuted.unsqueeze(-2)).mean(dim=2)
-
-            # --- VÝPOČET KOMPONENT LOSS FUNKCE ---
+            num_samples, batch_size, seq_len, state_dim = ensemble_x_hat.shape
             
-            # Člen L_l2(θ) - počítá se s připojeným tenzorem, aby se model učil přesnosti
-            loss_l2 = F.mse_loss(x_hat_mean, x_true_batch)
+            total_loss_for_batch = 0.0
 
-            # --- KLÍČOVÁ ZMĚNA S .detach() ---
-            # Člen L_M2(θ) - pro výpočet cíle (empirical_cov) použijeme odpojený tenzor
-            # Tím zabráníme tomu, aby snaha o minimalizaci loss_l2 ovlivňovala cíl pro loss_m2.
-            e_for_m2 = (x_true_batch - x_hat_mean.detach()).unsqueeze(-1)
-            flat_e_for_m2 = e_for_m2.flatten(0, 1)
-            empirical_cov_flat = torch.bmm(flat_e_for_m2, flat_e_for_m2.transpose(1, 2))
-            empirical_cov = empirical_cov_flat.reshape_as(Sigma_hat)
-            
-            loss_m2 = F.mse_loss(Sigma_hat, empirical_cov)
-            
-            # Celková data-matching loss
-            data_matching_loss = (1 - beta) * loss_l2 + beta * loss_m2
+            # --- SMYČKA PŘES JEDNOTLIVÉ TRAJEKTORIE V DÁVCE ---
+            for i in range(batch_size):
+                ensemble_for_one_trajectory = ensemble_x_hat[:, i, :, :]
+                true_trajectory = x_true_batch[i, :, :]
+                
+                # --- SMYČKA PŘES JEDNOTLIVÉ ČASOVÉ KROKY ---
+                for t in range(seq_len):
+                    ensemble_at_t = ensemble_for_one_trajectory[:, t, :]
+                    true_state_at_t = true_trajectory[t, :]
+                    
+                    mean_hat_at_t = torch.mean(ensemble_at_t, dim=0)
+                    
+                    sigma_hat_at_t = torch.zeros((state_dim, state_dim), device=device)
 
-            # Regularizační člen
+                    # --- SMYČKA J realizací ---
+                    for j in range(num_samples):
+                        diff = ensemble_at_t[j] - mean_hat_at_t
+                        sigma_hat_at_t += torch.outer(diff, diff)
+                    sigma_hat_at_t /= num_samples
+
+                    loss_l2_at_t = F.mse_loss(mean_hat_at_t, true_state_at_t)
+                    
+                    error_detached = true_state_at_t - mean_hat_at_t.detach()
+                    empirical_cov_at_t = torch.outer(error_detached, error_detached)
+                    loss_m2_at_t = F.mse_loss(sigma_hat_at_t, empirical_cov_at_t)
+                    
+                    data_loss_at_t = (1 - beta) * loss_l2_at_t + beta * loss_m2_at_t
+                    total_loss_for_batch += data_loss_at_t
+            
+            avg_data_loss = total_loss_for_batch / (batch_size * seq_len)
+            
             regularization_loss = calculate_regularization_loss(model, c1, c2)
-
-            # Celková loss
-            total_loss = data_matching_loss + regularization_loss
+            total_loss = avg_data_loss + regularization_loss
             
             total_loss.backward()
             nn.utils.clip_grad_norm_(model.parameters(), clip_grad)
@@ -331,8 +342,8 @@ def train_bkn_article(model, train_loader, val_loader, device, epochs=200, lr=1e
             
         avg_train_loss = train_loss / len(train_loader)
         
-        # --- Validační fáze (se stejnou logikou) ---
-        model.train() # I zde necháme aktivní dropout pro konzistentní výpočet
+        # --- Validační fáze  ---
+        model.train() # nutné držet aktivní dropout
         val_loss = 0.0
         with torch.no_grad():
             for x_true_val, y_meas_val in val_loader:
@@ -341,24 +352,38 @@ def train_bkn_article(model, train_loader, val_loader, device, epochs=200, lr=1e
                 
                 ensemble_x_hat_val = torch.stack([model(y_meas_val) for _ in range(J_samples)], dim=0)
                 
-                x_hat_mean_val = ensemble_x_hat_val.mean(dim=0)
-                diff_val = ensemble_x_hat_val - x_hat_mean_val
-                diff_permuted_val = diff_val.permute(1, 2, 0, 3)
-                Sigma_hat_val = torch.matmul(diff_permuted_val.unsqueeze(-1), diff_permuted_val.unsqueeze(-2)).mean(dim=2)
+                num_samples_val, batch_size_val, seq_len_val, state_dim_val = ensemble_x_hat_val.shape
                 
-                loss_l2_val = F.mse_loss(x_hat_mean_val, x_true_val)
+                total_val_loss_for_batch = 0.0
+                
+                for i in range(batch_size_val):
+                    ensemble_traj_val = ensemble_x_hat_val[:, i, :, :]
+                    true_traj_val = x_true_val[i, :, :]
+                    
+                    for t in range(seq_len_val):
+                        ensemble_t_val = ensemble_traj_val[:, t, :]
+                        true_t_val = true_traj_val[t, :]
+                        
+                        mean_hat_t_val = torch.mean(ensemble_t_val, dim=0)
+                        
+                        sigma_hat_t_val = torch.zeros((state_dim_val, state_dim_val), device=device)
+                        for j in range(num_samples_val):
+                            diff_val = ensemble_t_val[j] - mean_hat_t_val
+                            sigma_hat_t_val += torch.outer(diff_val, diff_val)
+                        sigma_hat_t_val /= num_samples_val
+                        
+                        loss_l2_val = F.mse_loss(mean_hat_t_val, true_t_val)
+                        
+                        error_val_detached = true_t_val - mean_hat_t_val.detach()
+                        emp_cov_val = torch.outer(error_val_detached, error_val_detached)
+                        loss_m2_val = F.mse_loss(sigma_hat_t_val, emp_cov_val)
+                        
+                        # Pro validační loss se obvykle regularizace nezahrnuje
+                        data_loss_val = (1 - beta) * loss_l2_val + beta * loss_m2_val
+                        total_val_loss_for_batch += data_loss_val
 
-                # Zde není .detach() technicky nutné, protože nepočítáme gradienty,
-                # ale pro 100% shodu logiky s tréninkem ho můžeme použít.
-                e_val = (x_true_val - x_hat_mean_val.detach()).unsqueeze(-1)
-                flat_e_val = e_val.flatten(0, 1)
-                emp_cov_flat_val = torch.bmm(flat_e_val, flat_e_val.transpose(1, 2))
-                emp_cov_val = emp_cov_flat_val.reshape_as(Sigma_hat_val)
-                loss_m2_val = F.mse_loss(Sigma_hat_val, emp_cov_val)
-                
-                # Pro validační loss se obvykle regularizace nezahrnuje
-                total_val_loss_sample = (1 - beta) * loss_l2_val + beta * loss_m2_val
-                val_loss += total_val_loss_sample.item()
+                avg_val_loss_for_batch = total_val_loss_for_batch / (batch_size_val * seq_len_val)
+                val_loss += avg_val_loss_for_batch.item()
 
         avg_val_loss = val_loss / len(val_loader)
         scheduler.step(avg_val_loss)
@@ -384,4 +409,142 @@ def train_bkn_article(model, train_loader, val_loader, device, epochs=200, lr=1e
         model.load_state_dict(best_model_state)
     
     model.eval() # Po dokončení tréninku přepneme model do evaluačního módu
+    return model
+
+def train_bkn_optimized(model, train_loader, val_loader, device, 
+                        epochs=200, lr=1e-4, clip_grad=1.0, early_stopping_patience=20, 
+                        J_samples=10, 
+                        initial_beta=0.01, final_beta=0.9, beta_warm_up_epochs=50,
+                        c1=1e-8, c2=1e-8):
+    """
+    Optimalizovaná verze trénovací funkce, která využívá tenzorové operace
+    pro rychlost, ale vyhýbá se matoucím funkcím jako permute nebo bmm.
+    """
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5, verbose=True)
+
+    best_val_loss = float('inf')
+    epochs_no_improve = 0
+    best_model_state = None
+    
+    for epoch in range(epochs):
+        # --- Beta Scheduling ---
+        if epoch < beta_warm_up_epochs:
+            beta = initial_beta + (final_beta - initial_beta) * (epoch / beta_warm_up_epochs)
+        else:
+            beta = final_beta
+
+        model.train()
+        train_loss = 0.0
+        
+        for x_true_batch, y_meas_batch in train_loader:
+            x_true_batch = x_true_batch.to(device)
+            y_meas_batch = y_meas_batch.to(device)
+            
+            optimizer.zero_grad()
+            
+            # --- Získání ensemblu J predikcí ---
+            # Tvar: [J_samples, batch_size, seq_len, state_dim]
+            ensemble_x_hat = torch.stack([model(y_meas_batch) for _ in range(J_samples)], dim=0)
+            
+            # --- TENZOROVÉ VÝPOČTY BEZ BMM/PERMUTE ---
+
+            # 1. Průměrný odhad
+            # Tvar: [batch_size, seq_len, state_dim]
+            x_hat_mean = torch.mean(ensemble_x_hat, dim=0)
+            
+            # 2. Odhad kovarianční matice Sigma_hat
+            # Rozdíl od průměru
+            # Tvar: [J_samples, batch_size, seq_len, state_dim]
+            diff = ensemble_x_hat - x_hat_mean
+            
+            # Výpočet vnějšího součinu (outer product) pro všechny body najednou
+            # Rozšíříme dimenze, aby broadcasting provedl vnější součin
+            # Tvar: [J_samples, batch_size, seq_len, state_dim, 1]
+            diff_col = diff.unsqueeze(-1)
+            # Tvar: [J_samples, batch_size, seq_len, 1, state_dim]
+            diff_row = diff.unsqueeze(-2)
+            
+            # Broadcasting `(J, B, S, D, 1) * (J, B, S, 1, D)` dá `(J, B, S, D, D)`
+            outer_product_ensemble = diff_col * diff_row
+            
+            # Zprůměrujeme přes `J_samples` dimenzi, abychom dostali finální Sigma_hat
+            # Tvar: [batch_size, seq_len, state_dim, state_dim]
+            Sigma_hat = torch.mean(outer_product_ensemble, dim=0)
+
+            # 3. Výpočet komponent Loss
+            # L_l2: MSE na průměrném odhadu
+            loss_l2 = F.mse_loss(x_hat_mean, x_true_batch)
+
+            # L_M2: MSE na kovarianci
+            error_detached = x_true_batch - x_hat_mean.detach()
+            # Stejný trik s broadcastingem pro empirickou kovarianci
+            error_col = error_detached.unsqueeze(-1)
+            error_row = error_detached.unsqueeze(-2)
+            empirical_cov = error_col * error_row
+            
+            loss_m2 = F.mse_loss(Sigma_hat, empirical_cov)
+            
+            # Celková datová loss
+            data_matching_loss = (1 - beta) * loss_l2 + beta * loss_m2
+            
+            # Přičtení regularizace
+            regularization_loss = calculate_regularization_loss(model, c1, c2)
+            total_loss = data_matching_loss + regularization_loss
+            
+            total_loss.backward()
+            nn.utils.clip_grad_norm_(model.parameters(), clip_grad)
+            optimizer.step()
+            train_loss += total_loss.item()
+            
+        avg_train_loss = train_loss / len(train_loader)
+        
+        # --- Validační fáze (se stejnou optimalizovanou logikou) ---
+        model.train()
+        val_loss = 0.0
+        with torch.no_grad():
+            for x_true_val, y_meas_val in val_loader:
+                x_true_val = x_true_val.to(device)
+                y_meas_val = y_meas_val.to(device)
+                
+                ensemble_x_hat_val = torch.stack([model(y_meas_val) for _ in range(J_samples)], dim=0)
+                
+                x_hat_mean_val = torch.mean(ensemble_x_hat_val, dim=0)
+
+                diff_val = ensemble_x_hat_val - x_hat_mean_val
+                outer_product_val = diff_val.unsqueeze(-1) * diff_val.unsqueeze(-2)
+                Sigma_hat_val = torch.mean(outer_product_val, dim=0)
+
+                loss_l2_val = F.mse_loss(x_hat_mean_val, x_true_val)
+
+                error_val_detached = x_true_val - x_hat_mean_val.detach()
+                emp_cov_val = error_val_detached.unsqueeze(-1) * error_val_detached.unsqueeze(-2)
+                loss_m2_val = F.mse_loss(Sigma_hat_val, emp_cov_val)
+                
+                total_val_loss_sample = (1 - beta) * loss_l2_val + beta * loss_m2_val
+                val_loss += total_val_loss_sample.item()
+
+        avg_val_loss = val_loss / len(val_loader)
+        scheduler.step(avg_val_loss)
+
+        if (epoch + 1) % 5 == 0:
+            print(f'Epoch [{epoch+1}/{epochs}], Train Loss: {avg_train_loss:.6f}, Val Loss: {avg_val_loss:.6f}, Current Beta: {beta:.4f}')
+            
+        if avg_val_loss < best_val_loss:
+            best_val_loss = avg_val_loss
+            epochs_no_improve = 0
+            best_model_state = deepcopy(model.state_dict())
+        else:
+            epochs_no_improve += 1
+
+        if epochs_no_improve >= early_stopping_patience:
+            print(f"\nEarly stopping spuštěno po {epoch + 1} epochách.")
+            break
+
+    print("Trénování dokončeno.")
+    if best_model_state:
+        print(f"Načítám nejlepší model s validační chybou: {best_val_loss:.6f}")
+        model.load_state_dict(best_model_state)
+    
+    model.eval()
     return model
