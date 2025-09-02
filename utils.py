@@ -454,12 +454,11 @@ def train_bkn_optimized(model, train_loader, val_loader, device,
 
 def train_bkn_with_logging(model, train_loader, val_loader, device, 
                            epochs=200, lr=1e-4, clip_grad=1.0, early_stopping_patience=20, 
-                           J_samples=10, 
+                           J_samples=10, num_val_data_samples=10, 
                            initial_beta=0.01, final_beta=0.9, beta_warmup_epochs=50,
                            c1=1e-8, c2=1e-8):
     """
     Verze trénovací funkce s detailním logováním jednotlivých komponent loss
-    pro lepší ladění a pochopení.
     """
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5, verbose=True)
@@ -468,41 +467,55 @@ def train_bkn_with_logging(model, train_loader, val_loader, device,
     epochs_no_improve = 0
     best_model_state = None
     
-    print(f"Zahajuji trénování BKN s detailním logováním.")
-
+    # linearni interpolace parametru beta => model se nejdriv zameri na minimalizaci chyby odhadu a pak kovariance
     for epoch in range(epochs):
         if epoch < beta_warmup_epochs:
             beta = initial_beta + (final_beta - initial_beta) * (epoch / beta_warmup_epochs)
         else:
             beta = final_beta
 
-        model.train()
-        
+        model.train() # dulezite kvuli dropout vrstvam
+
         epoch_total_losses = []
         epoch_l2_losses = []
         epoch_m2_losses = []
         epoch_reg_losses = []
         
+        # zpracovani mini-batche
         for x_true_batch, y_meas_batch in train_loader:
             x_true_batch = x_true_batch.to(device)
             y_meas_batch = y_meas_batch.to(device)
             
             optimizer.zero_grad()
             
+            # predikce stavu a cov matice z modelu
             x_hat_mean, Sigma_hat = model(y_meas_batch, num_samples=J_samples)
-            
+
+            # Vypocet L2 ztraty
             loss_l2 = F.mse_loss(x_hat_mean, x_true_batch)
 
-            e_for_m2 = (x_true_batch - x_hat_mean.detach())
-            empirical_variances = e_for_m2 ** 2
-            predicted_variances = torch.diagonal(Sigma_hat, dim1=-2, dim2=-1)
+            # vypocet chyby odhadu s pouzitim .detach() pro spravnou funkci backpropagation
+            e_for_m2 = (x_true_batch - x_hat_mean.detach()) #[batch, seq, state_dim]
+
+            # ve formátu vektoru (není to matice, protože mi stačí jen diagonální prvky)
+            empirical_variances = e_for_m2 ** 2  #[batch, seq, state_dim]
+            
+            # vypocet diagonálních prvku matice cov matice a jejich přeuspořádání do vektoru
+            predicted_variances = torch.diagonal(Sigma_hat, dim1=-2, dim2=-1) #[batch, seq, state_dim, state_dim]
+
+            #loss_m2 porovnává dva VEKTORY o tvaru [batch, seq, state_dim]
             loss_m2 = F.l1_loss(predicted_variances, empirical_variances)
             
+            # rovnice pro celkovou datovou ztrátu
             data_matching_loss = (1 - beta) * loss_l2 + beta * loss_m2
             
+            # vypocet regularizace
             regularization_loss = calculate_regularization_loss(model, c1, c2)
+
+            # celková ztráta
             total_loss = data_matching_loss + regularization_loss
-            
+
+            # zpětná propagace
             total_loss.backward()
             nn.utils.clip_grad_norm_(model.parameters(), clip_grad)
             optimizer.step()
@@ -526,9 +539,10 @@ def train_bkn_with_logging(model, train_loader, val_loader, device,
                 y_meas_val = y_meas_val.to(device)
                 
                 model.train()
-                x_hat_mean_val, _ = model(y_meas_val, num_samples=5)
+                x_hat_mean_val, _ = model(y_meas_val, num_samples=num_val_data_samples)
                 model.eval()
-                
+
+                # pro validaci by melo stacit jen MSE, protože cílem je mít co nejpřesnější odhad
                 val_loss += F.mse_loss(x_hat_mean_val, x_true_val).item()
 
         avg_val_loss = val_loss / len(val_loader)
@@ -541,7 +555,8 @@ def train_bkn_with_logging(model, train_loader, val_loader, device,
             print(f"    ├─ L2 (MSE):   {avg_l2_loss:.6f} (váha: {1-beta:.2f})")
             print(f"    ├─ M2 (L1 Var):{avg_m2_loss:.6f} (váha: {beta:.2f})")
             print(f"    └─ Regularize: {avg_reg_loss:.6f}")
-            
+
+        # early stopping při dlouhodobém zhoršení validační ztráty
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
             epochs_no_improve = 0
