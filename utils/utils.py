@@ -4,7 +4,7 @@ import numpy as np
 import torch.nn.functional as F
 from copy import deepcopy
 
-from KalmanNet_withCovMatrix import KalmanNet_withCovMatrix
+from NN_models.KalmanNet_withCovMatrix import KalmanNet_withCovMatrix
 
 # Funkce pro generování dat
 def generate_data(system, num_trajectories, seq_len):
