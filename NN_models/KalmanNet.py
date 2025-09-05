@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F # Správný import pro relu
+import torch.nn.functional as F
 
 class KalmanNet(nn.Module):
     """
@@ -11,7 +11,6 @@ class KalmanNet(nn.Module):
     def __init__(self, system_model, device, hidden_size_multiplier=10):
         super(KalmanNet, self).__init__()
         
-        # Uložíme si zařízení jako atribut třídy
         self.device = device
         
         self.system_model = system_model
@@ -37,7 +36,6 @@ class KalmanNet(nn.Module):
     def forward(self, y_seq):
         batch_size, seq_len, _ = y_seq.shape
         
-        # Vytváříme tenzory na správném zařízení
         x_hat_prev_posterior = torch.zeros(batch_size, self.state_dim, device=self.device)
         delta_x_hat_update_prev = torch.zeros(batch_size, self.state_dim, device=self.device)
         h = torch.zeros(1, batch_size, self.hidden_dim, device=self.device)
@@ -62,7 +60,7 @@ class KalmanNet(nn.Module):
 
             # Průchod sítí
             out_input_layer = self.input_layer(nn_input)
-            activated_input = F.relu(out_input_layer) # Používáme F, ne nn_func
+            activated_input = F.relu(out_input_layer) 
             out_gru, h = self.gru(activated_input.unsqueeze(0), h)
             out_output_layer = self.output_layer(out_gru.squeeze(0))
             
