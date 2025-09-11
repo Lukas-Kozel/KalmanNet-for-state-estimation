@@ -27,7 +27,7 @@ def generate_data(system, num_trajectories, seq_len):
     return x_data, y_data
 
 # Trénovací funkce
-def train(model, train_loader,device, epochs=50, lr=1e-4, clip_grad=1.0):
+def train(model, train_loader,device, epochs=50, lr=1e-4, clip_grad=10):
     criterion = nn.MSELoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
@@ -60,7 +60,7 @@ def train(model, train_loader,device, epochs=50, lr=1e-4, clip_grad=1.0):
     print("Trénování dokončeno.")
 
 def train_with_scheduler(model, train_loader, val_loader, device, 
-                         epochs=200, lr=1e-3, clip_grad=1.0, 
+                         epochs=200, lr=1e-3, clip_grad=10, 
                          early_stopping_patience=20):
     criterion = nn.MSELoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
@@ -174,7 +174,7 @@ def calculate_regularization_loss(model,c1,c2):
 
 
 def train_bkn(model, train_loader, val_loader, device, 
-              epochs=200, lr=1e-4, clip_grad=1.0, early_stopping_patience=20, 
+              epochs=200, lr=1e-4, clip_grad=10, early_stopping_patience=20, 
               J_samples=10, 
               initial_beta=0.01, final_beta=0.9, beta_warmup_epochs=50,
               c1=1e-8, c2=1e-8):
@@ -325,7 +325,7 @@ def train_bkn(model, train_loader, val_loader, device,
     return model
 
 def train_bkn_optimized(model, train_loader, val_loader, device, 
-                        epochs=200, lr=1e-4, clip_grad=1.0, early_stopping_patience=20, 
+                        epochs=200, lr=1e-4, clip_grad=10, early_stopping_patience=20, 
                         J_samples=10, 
                         initial_beta=0.01, final_beta=0.9, beta_warm_up_epochs=50,
                         c1=1e-8, c2=1e-8):
@@ -453,7 +453,7 @@ def train_bkn_optimized(model, train_loader, val_loader, device,
 
 
 def train_bkn_with_logging(model, train_loader, val_loader, device, 
-                           epochs=200, lr=1e-4, clip_grad=1.0, early_stopping_patience=20, 
+                           epochs=200, lr=1e-4, clip_grad=10, early_stopping_patience=20, 
                            J_samples=10, num_val_data_samples=10, 
                            initial_beta=0.01, final_beta=0.9, beta_warmup_epochs=50,
                            c1=1e-8, c2=1e-8):
@@ -574,4 +574,117 @@ def train_bkn_with_logging(model, train_loader, val_loader, device,
         model.load_state_dict(best_model_state)
     
     model.eval()
+    return model
+
+def gaussian_nll_robust(target, predicted_mean, predicted_var):
+    variance_floor = 1e-6
+    
+    is_below_floor = predicted_var < variance_floor
+    num_clamped = torch.sum(is_below_floor).item()
+    
+    clamped_var = torch.clamp(predicted_var, min=variance_floor)
+
+    mahal = torch.square(target - predicted_mean) / clamped_var
+    log_term = torch.log(clamped_var)
+    pi_tensor = torch.tensor(2 * torch.pi, device=target.device)
+    element_wise_nll = 0.5 * (log_term + torch.log(pi_tensor) + mahal)
+    
+    return torch.mean(element_wise_nll), num_clamped
+
+
+def train_bkn_nll_final(model, train_loader, val_loader, device, 
+                        epochs=200, lr=1e-4, clip_grad=10, early_stopping_patience=15):
+    """
+    Finální verze, která používá přesnou implementaci `gaussian_nll`
+    Očekává, že model vrací (x_hat_mean, Sigma_hat).
+    """
+    
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5, verbose=True)
+
+    best_val_loss = float('inf')
+    epochs_no_improve = 0
+    best_model_state = None
+
+    for epoch in range(epochs):
+        model.train() # Aktivuje dropout pro regularizaci a MC sampling
+        train_loss = 0.0
+
+        total_clamped_in_epoch = 0
+        total_vars_in_epoch = 0 # Pro výpočet procenta
+
+        for x_true_batch, y_meas_batch in train_loader:
+            x_true_batch = x_true_batch.to(device)
+            y_meas_batch = y_meas_batch.to(device)
+            
+            optimizer.zero_grad()
+            
+            # Předpokládáme, že model vrací (x_hat_mean, Sigma_hat)
+            x_hat_mean, Sigma_hat = model(y_meas_batch, num_samples=5)
+            
+            predicted_variances = torch.diagonal(Sigma_hat, dim1=-2, dim2=-1)
+            
+            loss, num_clamped_batch = gaussian_nll_robust(
+                target=x_true_batch, 
+                predicted_mean=x_hat_mean, 
+                predicted_var=predicted_variances
+            )
+            
+            loss.backward()
+            nn.utils.clip_grad_norm_(model.parameters(), clip_grad)
+            optimizer.step()
+            train_loss += loss.item()
+            total_clamped_in_epoch += num_clamped_batch
+            total_vars_in_epoch += predicted_variances.numel()
+            
+        avg_train_loss = train_loss / len(train_loader)
+        
+        # --- Validační fáze ---
+        model.eval()
+        val_loss = 0.0
+        with torch.no_grad():
+            for x_true_val, y_meas_val in val_loader:
+                x_true_val = x_true_val.to(device)
+                y_meas_val = y_meas_val.to(device)
+                
+                model.train() # Dočasně zapneme dropout
+                x_hat_val, sigma_hat_val = model(y_meas_val, num_samples=5)
+                model.eval()
+
+                predicted_variances_val = torch.diagonal(sigma_hat_val, dim1=-2, dim2=-1)
+                
+                loss,_ = gaussian_nll_robust(
+                    target=x_true_val, 
+                    predicted_mean=x_hat_val, 
+                    predicted_var=predicted_variances_val
+                )
+                val_loss += loss.item()
+
+        avg_val_loss = val_loss / len(val_loader)
+        scheduler.step(avg_val_loss)
+
+        clamped_percentage = (total_clamped_in_epoch / total_vars_in_epoch) * 100 if total_vars_in_epoch > 0 else 0
+
+        if (epoch + 1) % 5 == 0:
+            print(f"--- Epocha [{epoch+1}/{epochs}] ---")
+            print(f"  Val Loss (NLL): {avg_val_loss:.4f}")
+            print(f"  Train Loss (NLL): {avg_train_loss:.4f}")
+            print(f"  Clamped Variances: {clamped_percentage:.2f}% ({total_clamped_in_epoch}/{total_vars_in_epoch})")
+
+        if avg_val_loss < best_val_loss:
+            best_val_loss = avg_val_loss
+            epochs_no_improve = 0
+            best_model_state = deepcopy(model.state_dict())
+        else:
+            epochs_no_improve += 1
+
+        if epochs_no_improve >= early_stopping_patience:
+            print(f"\nEarly stopping spuštěno po {epoch + 1} epochách.")
+            break
+            
+    print("Trénování dokončeno.")
+    if best_model_state:
+        print(f"Načítám nejlepší model s validační chybou (NLL): {best_val_loss:.4f}")
+        model.load_state_dict(best_model_state)
+        
     return model
