@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.func import jacrev
 
 class KalmanNetWithKnownR(nn.Module):
     """
@@ -79,10 +80,20 @@ class KalmanNetWithKnownR(nn.Module):
             x_filtered_prev = x_hat_posterior.clone()
             
             x_hat_list.append(x_hat_posterior)
-
-            if (self.system_model.H @ self.system_model.H.T).det() != 0:
-                P_predict = K @ self.system_model.R @ (torch.eye(self.state_dim) - K @ self.system_model.H).inverse() @ self.system_model.H.T @ self.system_model.H
-                P_predict_list.append(P_predict)
             
+            # Iterace přes prvky v batche pro výpočet P_predict
+            for i in range(batch_size):
+                K_i = K[i]  # Kalmanův zisk pro i-tý prvek v batche
 
-        return torch.stack(x_hat_list, dim=1)
+                x_predicted_i = x_predicted[i]
+
+                H_t_i = jacrev(self.h)(x_predicted_i.squeeze()).reshape(self.obs_dim, self.state_dim)
+
+                I = torch.eye(self.state_dim, device=self.device)
+
+                if(H_t_i @ H_t_i.T).det() != 0:
+                    P_predict_i = K_i @ self.R @ (I- K_i @ H_t_i.T).inverse() @ H_t_i.T @ H_t_i
+                    P_predict_list.append(P_predict_i)
+                    
+
+        return torch.stack(x_hat_list, dim=1), torch.stack(P_predict_list, dim=1)
