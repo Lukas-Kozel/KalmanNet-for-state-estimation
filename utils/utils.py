@@ -176,26 +176,27 @@ def calculate_regularization_loss(model,c1,c2):
 def train_bkn(model, train_loader, val_loader, device, 
               epochs=200, lr=1e-4, clip_grad=10, early_stopping_patience=20, 
               J_samples=10, 
-              initial_beta=0.01, final_beta=0.9, beta_warmup_epochs=50,
-              c1=1e-8, c2=1e-8):
+              final_beta=0.5):
     """
     Funkce pro trénování BayesianKalmanNet.
     """
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    optimizer = torch.optim.Adam([
+    {'params': model.input_layer.parameters()},
+    {'params': model.gru.parameters()},
+    {'params': model.output_layer.parameters()},
+    {'params': model.concrete_dropout1.parameters()},
+    {'params': model.concrete_dropout2.parameters()}
+], lr=lr)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5, verbose=True)
 
     best_val_loss = float('inf')
     epochs_no_improve = 0
     best_model_state = None
     
-    for epoch in range(epochs):
+    total_train_iter = len(train_loader)*epochs
+    train_count=0
 
-        if epoch < beta_warmup_epochs:
-            # Lineární nárůst od initial_beta k final_beta
-            beta = initial_beta + (final_beta - initial_beta) * (epoch / beta_warmup_epochs)
-        else:
-            # Po warm-up fázi zůstane beta na finální hodnotě
-            beta = final_beta
+    for epoch in range(epochs):
 
         model.train() # dropout musí být aktivní
         train_loss = 0.0
@@ -204,57 +205,33 @@ def train_bkn(model, train_loader, val_loader, device,
             x_true_batch = x_true_batch.to(device)
             y_meas_batch = y_meas_batch.to(device)
             
+            # --- Beta Scheduling ---
+            beta = final_beta * (train_count / total_train_iter)
+            train_count+=1
+
             optimizer.zero_grad()
             
             # --- Získání ensemblu J predikcí ---
             # Tvar: [J_samples, batch_size, seq_len, state_dim]
-            ensemble_x_hat = torch.stack([model(y_meas_batch) for _ in range(J_samples)], dim=0)
+            x_hat_mean, sigma_hat, regularization_loss = model(y_meas_batch, num_samples=J_samples)
             
-            num_samples, batch_size, seq_len, state_dim = ensemble_x_hat.shape
-            
-            total_loss_for_batch = 0.0
+            predicted_variances = torch.diagonal(sigma_hat, dim1=-2, dim2=-1)
 
-            # --- SMYČKA PŘES JEDNOTLIVÉ TRAJEKTORIE V DÁVCE ---
-            for i in range(batch_size):
-                ensemble_for_one_trajectory = ensemble_x_hat[:, i, :, :]
-                true_trajectory = x_true_batch[i, :, :]
-                
-                # --- SMYČKA PŘES JEDNOTLIVÉ ČASOVÉ KROKY ---
-                for t in range(seq_len):
-                    ensemble_at_t = ensemble_for_one_trajectory[:, t, :]
-                    true_state_at_t = true_trajectory[t, :]
-                    
-                    mean_hat_at_t = torch.mean(ensemble_at_t, dim=0)
-                    
-                    sigma_hat_at_t = torch.zeros((state_dim, state_dim), device=device)
-
-                    # --- SMYČKA J realizací ---
-                    for j in range(num_samples):
-                        diff = ensemble_at_t[j] - mean_hat_at_t
-                        sigma_hat_at_t += torch.outer(diff, diff)
-                    sigma_hat_at_t /= num_samples
-
-                    loss_l2_at_t = F.mse_loss(mean_hat_at_t, true_state_at_t)
-                    
-                    error_detached = true_state_at_t - mean_hat_at_t.detach()
-                    empirical_cov_at_t = torch.outer(error_detached, error_detached)
-                    loss_m2_at_t = F.mse_loss(sigma_hat_at_t, empirical_cov_at_t)
-                    
-                    data_loss_at_t = (1 - beta) * loss_l2_at_t + beta * loss_m2_at_t
-                    total_loss_for_batch += data_loss_at_t
+            data_loss = empirical_averaging_reference(target=x_true_batch, 
+                                                      predicted_mean=x_hat_mean, 
+                                                      predicted_var=predicted_variances.detach(),
+                                                      beta=beta)
             
-            avg_data_loss = total_loss_for_batch / (batch_size * seq_len)
-            
-            regularization_loss = calculate_regularization_loss(model, c1, c2)
-            total_loss = avg_data_loss + regularization_loss
+            reg_multiplier = 1.0
+            total_loss = data_loss + reg_multiplier * regularization_loss
             
             total_loss.backward()
             nn.utils.clip_grad_norm_(model.parameters(), clip_grad)
             optimizer.step()
             train_loss += total_loss.item()
-            
+
         avg_train_loss = train_loss / len(train_loader)
-        
+
         # --- Validační fáze  ---
         model.train() # nutné držet aktivní dropout
         val_loss = 0.0
@@ -263,46 +240,18 @@ def train_bkn(model, train_loader, val_loader, device,
                 x_true_val = x_true_val.to(device)
                 y_meas_val = y_meas_val.to(device)
                 
-                ensemble_x_hat_val = torch.stack([model(y_meas_val) for _ in range(J_samples)], dim=0)
-                
-                num_samples_val, batch_size_val, seq_len_val, state_dim_val = ensemble_x_hat_val.shape
-                
-                total_val_loss_for_batch = 0.0
-                
-                for i in range(batch_size_val):
-                    ensemble_traj_val = ensemble_x_hat_val[:, i, :, :]
-                    true_traj_val = x_true_val[i, :, :]
-                    
-                    for t in range(seq_len_val):
-                        ensemble_t_val = ensemble_traj_val[:, t, :]
-                        true_t_val = true_traj_val[t, :]
-                        
-                        mean_hat_t_val = torch.mean(ensemble_t_val, dim=0)
-                        
-                        sigma_hat_t_val = torch.zeros((state_dim_val, state_dim_val), device=device)
-                        for j in range(num_samples_val):
-                            diff_val = ensemble_t_val[j] - mean_hat_t_val
-                            sigma_hat_t_val += torch.outer(diff_val, diff_val)
-                        sigma_hat_t_val /= num_samples_val
-                        
-                        loss_l2_val = F.mse_loss(mean_hat_t_val, true_t_val)
-                        
-                        error_val_detached = true_t_val - mean_hat_t_val.detach()
-                        emp_cov_val = torch.outer(error_val_detached, error_val_detached)
-                        loss_m2_val = F.mse_loss(sigma_hat_t_val, emp_cov_val)
-                        
-                        # Pro validační loss se obvykle regularizace nezahrnuje
-                        data_loss_val = (1 - beta) * loss_l2_val + beta * loss_m2_val
-                        total_val_loss_for_batch += data_loss_val
-
-                avg_val_loss_for_batch = total_val_loss_for_batch / (batch_size_val * seq_len_val)
-                val_loss += avg_val_loss_for_batch.item()
+                x_hat_mean_val, _, _ = model(y_meas_val, num_samples=5)
+                val_loss += F.mse_loss(x_hat_mean_val, x_true_val).item()
 
         avg_val_loss = val_loss / len(val_loader)
         scheduler.step(avg_val_loss)
 
         if (epoch + 1) % 5 == 0:
             print(f'Epoch [{epoch+1}/{epochs}], Train Loss: {avg_train_loss:.6f}, Val Loss: {avg_val_loss:.6f}')
+            p1 = torch.sigmoid(model.concrete_dropout1.p_logit).item()
+            p2 = torch.sigmoid(model.concrete_dropout2.p_logit).item()
+            print(f"  Learned p: p1={p1:.4f}, p2={p2:.4f}")
+            print(f"  Regularization Loss: {regularization_loss.item():.6f}")
             
         # Early stopping a uložení nejlepšího modelu
         if avg_val_loss < best_val_loss:
@@ -688,3 +637,20 @@ def train_bkn_nll_final(model, train_loader, val_loader, device,
         model.load_state_dict(best_model_state)
         
     return model
+
+def mse_reference(target, predicted):
+    """Mean Squared Error"""
+    return torch.mean(torch.square(target - predicted))
+
+def empirical_averaging_reference(target, predicted_mean, predicted_var, beta):
+    """
+    Vrací JEDNO ČÍSLO (skalár) pro celou dávku.
+    """
+    L1 = mse_reference(target, predicted_mean)
+    
+    L2_sum = torch.sum(torch.abs(torch.square(target - predicted_mean) - predicted_var))
+    
+    num_elements = target.numel()
+    L2_normalized = L2_sum / num_elements if num_elements > 0 else 0
+
+    return (1 - beta) * L1 + beta * L2_normalized
