@@ -15,32 +15,32 @@ class BayesianKalmanNet(nn.Module):
         self.f = system_model.f
         self.h = system_model.h
 
-        H1 = (self.state_dim + self.obs_dim) * hidden_size_multiplier
-        H2 = (self.state_dim * self.obs_dim) * output_layer_multiplier
-        input_dim = self.state_dim + self.obs_dim
-        output_dim = self.state_dim * self.obs_dim
+        self.H1 = (self.state_dim + self.obs_dim) * hidden_size_multiplier
+        self.H2 = (self.state_dim * self.obs_dim) * output_layer_multiplier
+        self.input_dim = self.state_dim + self.obs_dim
+        self.output_dim = self.state_dim * self.obs_dim
 
         self.input_layer = nn.Sequential(
-            nn.Linear(input_dim, H1),
+            nn.Linear(self.input_dim, self.H1),
             nn.ReLU()
         )
-        self.concrete_dropout1 = ConcreteDropout(device=device)
+        self.concrete_dropout1 = ConcreteDropout(device=device, init_min=0.1, init_max=0.3)
 
-        self.gru = nn.GRU(H1, H1, num_layers=num_gru_layers)
+        self.gru = nn.GRU(self.H1, self.H1, num_layers=num_gru_layers)
 
         self.output_layer = nn.Sequential(
-            nn.Linear(H1, H2),
+            nn.Linear(self.H1, self.H2),
             nn.ReLU(),
-            nn.Linear(H2, output_dim)
+            nn.Linear(self.H2, self.output_dim)
         )
-        self.concrete_dropout2 = ConcreteDropout(device=device)
+        self.concrete_dropout2 = ConcreteDropout(device=device, init_min=0.1, init_max=0.3)
 
     def forward(self, y_seq, num_samples=20):
         batch_size, seq_len, _ = y_seq.shape
         
         x_filtered_prev = torch.zeros(batch_size, self.state_dim, device=self.device)
         delta_x_prev = torch.zeros(batch_size, self.state_dim, device=self.device)
-        h_gru_ensemble = torch.zeros(num_samples, 1, batch_size, self.hidden_dim, device=self.device)
+        h_gru_ensemble = torch.zeros(num_samples, self.gru.num_layers, batch_size, self.gru.hidden_size, device=self.device)
 
         x_filtered_trajectory = []
         P_filtered_trajectory = []
