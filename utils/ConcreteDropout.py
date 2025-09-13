@@ -23,7 +23,8 @@ class ConcreteDropout(nn.Module):
     def forward(self, x, layer):
         p = torch.sigmoid(self.p_logit) # p je mezi 0 a 1
 
-        out = layer(self._concrete_dropout(x, p))
+        x_dropped = self._concrete_dropout(x, p)
+        out = layer(x_dropped)
 
         sum_of_squares = 0
         for param in layer.parameters():
