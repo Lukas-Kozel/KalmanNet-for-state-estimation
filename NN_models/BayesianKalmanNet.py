@@ -4,7 +4,7 @@ import torch.nn.functional as F
 from utils.ConcreteDropout import ConcreteDropout
 
 class BayesianKalmanNet(nn.Module):
-    def __init__(self, system_model, device, hidden_size_multiplier=10, output_layer_multiplier=4):
+    def __init__(self, system_model, device, hidden_size_multiplier=10, output_layer_multiplier=4, num_gru_layers=1):
         super(BayesianKalmanNet, self).__init__()
         
         self.device = device
@@ -26,7 +26,7 @@ class BayesianKalmanNet(nn.Module):
         )
         self.concrete_dropout1 = ConcreteDropout(device=device)
 
-        self.gru = nn.GRU(H1, H1, num_layers=1)
+        self.gru = nn.GRU(H1, H1, num_layers=num_gru_layers)
 
         self.output_layer = nn.Sequential(
             nn.Linear(H1, H2),
