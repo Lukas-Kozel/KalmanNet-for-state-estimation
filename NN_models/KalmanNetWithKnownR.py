@@ -1,17 +1,14 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F # Správný import pro relu
+import torch.nn.functional as F
 
-class KalmanNet(nn.Module):
+class KalmanNetWithKnownR(nn.Module):
     """
-    KalmanNet Architektura #1 pro nelineární systémy.
-    Tato verze je plně "device-aware" a přijímá zařízení jako
-    parametr v konstruktoru.
+    KalmanNet Architektura #1 s tím, že je známa kovarianční matice měření R.
     """
     def __init__(self, system_model, device, hidden_size_multiplier=10):
-        super(KalmanNet, self).__init__()
+        super(KalmanNetWithKnownR, self).__init__()
         
-        # Uložíme si zařízení jako atribut třídy
         self.device = device
         
         self.system_model = system_model
@@ -32,18 +29,17 @@ class KalmanNet(nn.Module):
         # vmap pro nelineární funkce
         self.f_vmap = torch.vmap(self.system_model.f, in_dims=(0,))
         self.h_vmap = torch.vmap(self.system_model.h, in_dims=(0,))
-
+        self.R = system_model.R
 
     def forward(self, y_seq):
         batch_size, seq_len, _ = y_seq.shape
         
-        # Vytváříme tenzory na správném zařízení
         x_hat_prev_posterior = torch.zeros(batch_size, self.state_dim, device=self.device)
         delta_x_hat_update_prev = torch.zeros(batch_size, self.state_dim, device=self.device)
         h = torch.zeros(1, batch_size, self.hidden_dim, device=self.device)
 
         x_hat_list = []
-
+        P_predict_list = []
         for t in range(seq_len):
             y_t = y_seq[:, t, :]
             
@@ -62,7 +58,7 @@ class KalmanNet(nn.Module):
 
             # Průchod sítí
             out_input_layer = self.input_layer(nn_input)
-            activated_input = F.relu(out_input_layer) # Používáme F, ne nn_func
+            activated_input = F.relu(out_input_layer) 
             out_gru, h = self.gru(activated_input.unsqueeze(0), h)
             out_output_layer = self.output_layer(out_gru.squeeze(0))
             
@@ -78,5 +74,10 @@ class KalmanNet(nn.Module):
             x_hat_prev_posterior = x_hat_posterior.clone()
             
             x_hat_list.append(x_hat_posterior)
+
+            if (self.system_model.H @ self.system_model.H.T).det() != 0:
+                P_predict = K @ self.system_model.R @ (torch.eye(self.state_dim) - K @ self.system_model.H).inverse() @ self.system_model.H.T @ self.system_model.H
+                P_predict_list.append(P_predict)
+            
 
         return torch.stack(x_hat_list, dim=1)
