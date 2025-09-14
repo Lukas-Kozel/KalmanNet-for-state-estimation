@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 from argparse import Namespace
 
-from kalman_net_base import KalmanNetNN 
+from .kalman_net_base import KalmanNetNN 
 
 class KalmanNet2(nn.Module):
     def __init__(self, system_model, in_mult=20, out_mult=40):
