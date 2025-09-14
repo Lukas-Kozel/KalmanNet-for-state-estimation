@@ -6,6 +6,7 @@ from copy import deepcopy
 
 from NN_models.KalmanNet_withCovMatrix import KalmanNet_withCovMatrix
 
+
 # Funkce pro generování dat
 def generate_data(system, num_trajectories, seq_len):
 
@@ -574,4 +575,102 @@ def train_bkn_with_logging(model, train_loader, val_loader, device,
         model.load_state_dict(best_model_state)
     
     model.eval()
+    return model
+
+def train_state_KalmanNet(model, train_loader, val_loader, device, 
+                          epochs=100, lr=1e-3, clip_grad=1.0, early_stopping_patience=20):
+    criterion = nn.MSELoss()
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5, verbose=True)
+    
+    best_val_loss = float('inf')
+    epochs_no_improve = 0
+    best_model_state = None
+
+    for epoch in range(epochs):
+        # --- Trénovací fáze ---
+        model.train()
+        train_loss = 0.0
+        for x_true_batch, y_meas_batch in train_loader:
+            x_true_batch = x_true_batch.to(device)
+            y_meas_batch = y_meas_batch.to(device)
+
+            optimizer.zero_grad()
+
+            # restart vnitřního stavu filtru pro novou dávku
+            model.reset(batch_size=x_true_batch.shape[0])
+
+
+            predictions = []
+            seq_len = y_meas_batch.shape[1]
+
+            for t in range(seq_len):
+
+                y_t = y_meas_batch[:, t, :]
+
+                x_filtered_t = model.step(y_t)
+
+                predictions.append(x_filtered_t)
+
+            predicted_trajectory = torch.stack(predictions, dim=1)
+
+            loss = criterion(predicted_trajectory, x_true_batch)
+
+            loss.backward()
+
+            nn.utils.clip_grad_norm_(model.parameters(), clip_grad)
+
+            optimizer.step()
+
+            train_loss += loss.item()
+        
+        avg_train_loss = train_loss / len(train_loader)
+
+         # --- Validační fáze ---
+        model.eval()
+        epoch_val_loss = 0.0
+        with torch.no_grad():
+            for x_true_val, y_meas_val in val_loader:
+                x_true_val = x_true_val.to(device)
+                y_meas_val = y_meas_val.to(device)
+                
+                batch_size_val = x_true_val.shape[0]
+                seq_len_val = x_true_val.shape[1]
+                
+                # Resetujeme stav i pro validaci
+                model.reset(batch_size=batch_size_val)
+                
+                val_predictions = []
+                for t in range(seq_len_val):
+                    y_t_val = y_meas_val[:, t, :]
+                    x_filtered_t_val = model.step(y_t_val)
+                    val_predictions.append(x_filtered_t_val)
+                    
+                predicted_val_trajectory = torch.stack(val_predictions, dim=1)
+                
+                val_loss_batch = criterion(predicted_val_trajectory, x_true_val)
+                epoch_val_loss += val_loss_batch.item()
+
+        avg_val_loss = epoch_val_loss / len(val_loader)
+        scheduler.step(avg_val_loss)
+        
+        if (epoch + 1) % 5 == 0:
+            print(f'Epoch [{epoch+1}/{epochs}], Train Loss: {avg_train_loss:.6f}, Val Loss: {avg_val_loss:.6f}')
+        
+        if avg_val_loss < best_val_loss:
+            best_val_loss = avg_val_loss
+            epochs_no_improve = 0
+            best_model_state = deepcopy(model.state_dict())
+        else:
+            epochs_no_improve += 1
+
+        if epochs_no_improve >= early_stopping_patience:
+            print(f"\nEarly stopping spuštěno po {epoch + 1} epochách.")
+            break
+            
+    print("Trénování dokončeno.")
+    if best_model_state:
+        print(f"Načítám nejlepší model s validační chybou: {best_val_loss:.6f}")
+        model.load_state_dict(best_model_state)
+        
     return model
