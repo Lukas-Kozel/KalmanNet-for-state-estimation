@@ -19,6 +19,8 @@ class StateBayesianKalmanNet(nn.Module):
     def reset(self,batch_size=1, num_samples=10):
 
         self.x_filtered_prev = torch.zeros(batch_size, self.state_dim, device=self.device)
+        self.x_filtered_prev_prev = torch.zeros(batch_size, self.state_dim, device=self.device)
+        self.y_prev = torch.zeros(batch_size, self.obs_dim, device=self.device)
         self.delta_x_prev = torch.zeros(batch_size, self.state_dim, device=self.device)
         self.h_prev_ensemble = torch.zeros(
             num_samples, self.dnn.gru.num_layers, 
@@ -39,7 +41,10 @@ class StateBayesianKalmanNet(nn.Module):
         y_predicted_list = [self.system_model.h(x.unsqueeze(-1)) for x in x_predicted]
         y_predicted = torch.stack(y_predicted_list).squeeze(-1)
 
-        innovation = y_t - y_predicted
+        state_inno = self.delta_x_prev
+        residual = y_t - y_predicted
+        diff_state = self.x_filtered_prev - self.x_filtered_prev_prev
+        diff_obs = self.y_prev
 
         x_filtered_ensemble = []
         h_new_ensemble = []
@@ -47,33 +52,27 @@ class StateBayesianKalmanNet(nn.Module):
         for i in range(num_samples):
             h_j_prev = self.h_prev_ensemble[i]
             
-            norm_innovation = F.normalize(innovation, p=2, dim=1, eps=1e-12)
-            norm_delta_x = F.normalize(self.delta_x_prev, p=2, dim=1, eps=1e-12)
-            nn_input = torch.cat([norm_delta_x, norm_innovation], dim=1)
-            
-            # jeden průchod j-tou realizací
-            K_vec, h_j_new, regs = self.dnn(nn_input, h_j_prev)
+            K_vec, h_j_new, regs = self.dnn(state_inno, residual, diff_state, diff_obs, h_j_prev)
             
             K = K_vec.reshape(batch_size, self.state_dim, self.obs_dim)
-            correction = (K @ innovation.unsqueeze(-1)).squeeze(-1)
+            correction = (K @ residual.unsqueeze(-1)).squeeze(-1)
             x_filtered_j = x_predicted + correction
             
             x_filtered_ensemble.append(x_filtered_j)
             h_new_ensemble.append(h_j_new)
             regularization_ensemble.append(torch.sum(torch.stack(regs)))
 
-        # --- ENSEMBLE AVERAGING ---
-        # průměr přes J realizací
-        x_filtered_ensemble = torch.stack(x_filtered_ensemble, dim=0)
-        x_filtered_final = x_filtered_ensemble.mean(dim=0)
+        x_filtered_ensemble_tensor = torch.stack(x_filtered_ensemble, dim=0)
+        x_filtered_final = x_filtered_ensemble_tensor.mean(dim=0)
         
-        diff = x_filtered_ensemble - x_filtered_final
+        diff = x_filtered_ensemble_tensor - x_filtered_final
         P_filtered_final = (diff.unsqueeze(-1) * diff.unsqueeze(-2)).mean(dim=0)
         
         avg_regularization = torch.stack(regularization_ensemble).mean()
 
-        # --- AKTUALIZACE STAVU PRO PŘÍŠTÍ KROK ---
         self.delta_x_prev = x_filtered_final - x_predicted
+        self.x_filtered_prev_prev = self.x_filtered_prev.clone()
+        self.y_prev = y_t.clone()
         self.x_filtered_prev = x_filtered_final
         self.h_prev_ensemble = torch.stack(h_new_ensemble, dim=0)
         

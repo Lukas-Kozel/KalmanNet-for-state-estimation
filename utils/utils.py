@@ -218,7 +218,7 @@ def train_bkn(model, train_loader, val_loader, device,
             
             predicted_variances = torch.diagonal(sigma_hat, dim1=-2, dim2=-1)
 
-            data_loss = empirical_averaging_reference(target=x_true_batch, 
+            data_loss = empirical_averaging(target=x_true_batch, 
                                                       predicted_mean=x_hat_mean, 
                                                       predicted_var=predicted_variances.detach(),
                                                       beta=beta)
@@ -737,28 +737,22 @@ def train_bkn_nll_final(model, train_loader, val_loader, device,
         
     return model
 
-def mse_reference(target, predicted):
+def mse(target, predicted):
     """Mean Squared Error"""
     return torch.mean(torch.square(target - predicted))
 
-def empirical_averaging_reference(target, predicted_mean, predicted_var, beta):
-    """
-    Vrací JEDNO ČÍSLO (skalár) pro celou dávku.
-    """
-    L1 = mse_reference(target, predicted_mean)
-    
-    L2_sum = torch.sum(torch.abs(torch.square(target - predicted_mean) - predicted_var))
-    
-    num_elements = target.numel()
-    L2_normalized = L2_sum / num_elements if num_elements > 0 else 0
+def empirical_averaging(target, predicted_mean, predicted_var, beta):
+    L1 = mse(target, predicted_mean)
+    L2 = torch.sum(torch.abs((target - predicted_mean.detach())**2 - predicted_var))
+    return (1-beta)*L1 + beta * L2
 
-    return (1 - beta) * L1 + beta * L2_normalized
 
 def train_stateful_bkn(model, train_loader, val_loader, device, 
                        epochs=100, lr=1e-4, clip_grad=1.0, 
                        early_stopping_patience=20, 
                        J_samples=10, 
-                       final_beta=0.5):
+                       final_beta=0.01,
+                       beta_warmup_epochs=None):
     """
     Trénovací funkce pro STAVOVOU `StatefulBayesianKalmanNet`.
     """
@@ -781,7 +775,16 @@ def train_stateful_bkn(model, train_loader, val_loader, device,
             x_true_batch = x_true_batch.to(device)
             y_meas_batch = y_meas_batch.to(device)
             
-            beta = final_beta * (train_count / total_train_iter)
+            if beta_warmup_epochs is not None and beta_warmup_epochs > 0:
+                # Strategie č. 1: Warm-up
+                if epoch < beta_warmup_epochs:
+                    beta = 0.0
+                else:
+                    beta = final_beta
+            else:
+                # Strategie č. 2: Lineární inkrementace
+                beta = final_beta * (train_count / total_train_iter)
+
             train_count += 1
 
             optimizer.zero_grad()
@@ -809,15 +812,15 @@ def train_stateful_bkn(model, train_loader, val_loader, device,
             # Spojíme výsledky do tenzorů
             x_hat_mean = torch.stack(x_hat_mean_list, dim=1)
             sigma_hat = torch.stack(sigma_hat_list, dim=1)
-            regularization_loss = torch.stack(reg_list).mean()
+            regularization_loss = torch.stack(reg_list).sum()
             
             # --- Výpočet Loss (logika je stejná jako předtím) ---
             predicted_variances = torch.diagonal(sigma_hat, dim1=-2, dim2=-1)
 
-            data_loss = empirical_averaging_reference(
+            data_loss = empirical_averaging(
                 target=x_true_batch, 
                 predicted_mean=x_hat_mean, 
-                predicted_var=predicted_variances.detach(),
+                predicted_var=predicted_variances,
                 beta=beta
             )
             
