@@ -36,12 +36,12 @@ class DNN_BayesianKalmanNet(nn.Module):
     def forward(self, nn_input, h_prev):
         
         regularization = []
-        activated_input, regularization[0] = self.concrete_dropout1(nn_input, self.input_layer)
-                
+        activated_input, reg1 = self.concrete_dropout1(nn_input, self.input_layer)
+        regularization.append(reg1)
         out_gru,h_new = self.gru(activated_input.unsqueeze(0), h_prev)
 
         out_gru_squeezed = out_gru.squeeze(0)
 
-        out_final, regularization[1] = self.concrete_dropout2(out_gru_squeezed, self.output_layer)
-
+        out_final, reg2 = self.concrete_dropout2(out_gru_squeezed, self.output_layer)
+        regularization.append(reg2)
         return out_final, h_new, regularization
