@@ -26,7 +26,7 @@ class StateBayesianKalmanNet(nn.Module):
             device=self.device
         )
 
-    def step(self,y_t,J=10):
+    def step(self,y_t, num_samples=10):
         """
         Provede jeden kompletní krok filtrace pro jedno měření y_t s dimenzí batch_size.
         """
@@ -44,7 +44,7 @@ class StateBayesianKalmanNet(nn.Module):
         x_filtered_ensemble = []
         h_new_ensemble = []
         regularization_ensemble = []
-        for i in range(J):
+        for i in range(num_samples):
             h_j_prev = self.h_prev_ensemble[i]
             
             norm_innovation = F.normalize(innovation, p=2, dim=1, eps=1e-12)

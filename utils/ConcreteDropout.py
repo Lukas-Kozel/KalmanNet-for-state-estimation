@@ -2,26 +2,26 @@ from torch import nn
 import torch
 
 class ConcreteDropout(nn.Module):
-    def __init__(self, weight_regularizer=1e-6, dropout_regularizer=1e-5, init_min=0.5, init_max=0.8,device='cpu'):
+    def __init__(self, weight_regularizer=1e-6, dropout_regularizer=1e-5, init_min=0.5, init_max=0.8,device=None):
         """
         weight_regularizer: váha regularizace vah - ve článku je to l^2
         dropout_regularizer: váha regularizace dropout pravděpodobnosti - ve článku je to K
         """
         super(ConcreteDropout, self).__init__()
-        self.device = device
+        # self.device = device
         self.weight_regularizer = weight_regularizer
         self.dropout_regularizer = dropout_regularizer
 
         init_min = torch.log(torch.tensor(init_min)) - torch.log(1. - torch.tensor(init_min))
         init_max = torch.log(torch.tensor(init_max)) - torch.log(1. - torch.tensor(init_max))
 
-        self.p_logit = nn.Parameter(torch.empty(1).uniform_(init_min, init_max)).to(self.device) # dropout prob p je trenovatelny parametr,
+        self.p_logit = nn.Parameter(torch.empty(1).uniform_(init_min, init_max)) # dropout prob p je trenovatelny parametr,
         #uniform zajisti, ze je vzdy mezi 0 a 1
         # "logit" je transformace pravdepodobnosti p na realnou osu, tedy misto toho, aby se neuronka ucila, ze p musi byt mezi 0 a 1
         # , ucime se p_logit, ktery muze byt libovolne realne cislo
 
     def forward(self, x, layer):
-        p = torch.sigmoid(self.p_logit) # p je mezi 0 a 1
+        p = torch.sigmoid(self.p_logit.to(x.device)) # p je mezi 0 a 1
 
         x_dropped = self._concrete_dropout(x, p)
         out = layer(x_dropped)
@@ -49,7 +49,7 @@ class ConcreteDropout(nn.Module):
         eps = 1e-7
         t = 0.1
 
-        unif_noise = torch.rand_like(x).to(self.device) # ve clanku je to parametr u - U(0,1)
+        unif_noise = torch.rand_like(x) # ve clanku je to parametr u - U(0,1)
 
         drop_prob = (torch.log(p+eps) - torch.log(1. - p+eps) + torch.log(unif_noise+eps) - torch.log(1. - unif_noise+eps))
         drop_prob = torch.sigmoid(drop_prob / t) # pravdepodobnost vypnuti neuronu

@@ -753,3 +753,133 @@ def empirical_averaging_reference(target, predicted_mean, predicted_var, beta):
     L2_normalized = L2_sum / num_elements if num_elements > 0 else 0
 
     return (1 - beta) * L1 + beta * L2_normalized
+
+def train_stateful_bkn(model, train_loader, val_loader, device, 
+                       epochs=100, lr=1e-4, clip_grad=1.0, 
+                       early_stopping_patience=20, 
+                       J_samples=10, 
+                       final_beta=0.5):
+    """
+    Trénovací funkce pro STAVOVOU `StatefulBayesianKalmanNet`.
+    """
+    # Optimizer nyní vezme všechny parametry modelu, včetně těch v `self.dnn`
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5, verbose=True)
+
+    best_val_loss = float('inf')
+    epochs_no_improve = 0
+    best_model_state = None
+    
+    total_train_iter = len(train_loader) * epochs
+    train_count = 0
+
+    for epoch in range(epochs):
+        model.train() # Aktivuje `ConcreteDropout`
+        epoch_train_loss = 0.0
+        
+        for x_true_batch, y_meas_batch in train_loader:
+            x_true_batch = x_true_batch.to(device)
+            y_meas_batch = y_meas_batch.to(device)
+            
+            beta = final_beta * (train_count / total_train_iter)
+            train_count += 1
+
+            optimizer.zero_grad()
+            
+            batch_size = x_true_batch.shape[0]
+            seq_len = x_true_batch.shape[1]
+            
+            # DŮLEŽITÉ: Resetujeme stav filtru pro novou dávku
+            model.reset(batch_size=batch_size, num_samples=J_samples)
+            
+            # Seznamy pro sběr výsledků celé sekvence
+            x_hat_mean_list, sigma_hat_list, reg_list = [], [], []
+            
+            # --- SMYČKA PŘES ČASOVOU OSU ---
+            for t in range(seq_len):
+                y_t = y_meas_batch[:, t, :]
+                
+                # Provedeme jeden krok filtrace, získáme všechny 3 výstupy
+                x_filtered_t, P_filtered_t, reg_t = model.step(y_t, num_samples=J_samples)
+                
+                x_hat_mean_list.append(x_filtered_t)
+                sigma_hat_list.append(P_filtered_t)
+                reg_list.append(reg_t)
+
+            # Spojíme výsledky do tenzorů
+            x_hat_mean = torch.stack(x_hat_mean_list, dim=1)
+            sigma_hat = torch.stack(sigma_hat_list, dim=1)
+            regularization_loss = torch.stack(reg_list).mean()
+            
+            # --- Výpočet Loss (logika je stejná jako předtím) ---
+            predicted_variances = torch.diagonal(sigma_hat, dim1=-2, dim2=-1)
+
+            data_loss = empirical_averaging_reference(
+                target=x_true_batch, 
+                predicted_mean=x_hat_mean, 
+                predicted_var=predicted_variances.detach(),
+                beta=beta
+            )
+            
+            total_loss = data_loss + regularization_loss
+            
+            total_loss.backward() # BPTT se provede automaticky přes kroky `step`
+            nn.utils.clip_grad_norm_(model.parameters(), clip_grad)
+            optimizer.step()
+            
+            epoch_train_loss += total_loss.item()
+
+        avg_train_loss = epoch_train_loss / len(train_loader)
+
+        # --- Validační fáze (také stavová) ---
+        model.eval()
+        val_loss = 0.0
+        with torch.no_grad():
+            for x_true_val, y_meas_val in val_loader:
+                x_true_val = x_true_val.to(device)
+                y_meas_val = y_meas_val.to(device)
+                
+                batch_size_val = x_true_val.shape[0]
+                seq_len_val = x_true_val.shape[1]
+                
+                # `num_samples` pro validaci může být menší
+                model.reset(batch_size=batch_size_val, num_samples=5)
+                
+                val_predictions = []
+                for t in range(seq_len_val):
+                    y_t_val = y_meas_val[:, t, :]
+                    # Ignorujeme P a reg, zajímá nás jen odhad pro MSE
+                    x_filtered_t_val, _, _ = model.step(y_t_val, num_samples=5)
+                    val_predictions.append(x_filtered_t_val)
+                
+                predicted_val_trajectory = torch.stack(val_predictions, dim=1)
+                val_loss += F.mse_loss(predicted_val_trajectory, x_true_val).item()
+
+        avg_val_loss = val_loss / len(val_loader)
+        scheduler.step(avg_val_loss)
+
+        if (epoch + 1) % 5 == 0:
+            print(f'Epoch [{epoch+1}/{epochs}], Train Loss: {avg_train_loss:.6f}, Val Loss: {avg_val_loss:.6f}, Current Beta: {beta:.4f}')
+            # Logování `p` hodnot
+            p1 = torch.sigmoid(model.dnn.concrete_dropout1.p_logit).item()
+            p2 = torch.sigmoid(model.dnn.concrete_dropout2.p_logit).item()
+            print(f"  Learned p: p1={p1:.4f}, p2={p2:.4f}")
+
+        if avg_val_loss < best_val_loss:
+            best_val_loss = avg_val_loss
+            epochs_no_improve = 0
+            best_model_state = deepcopy(model.state_dict())
+        else:
+            epochs_no_improve += 1
+
+        if epochs_no_improve >= early_stopping_patience:
+            print(f"\nEarly stopping spuštěno po {epoch + 1} epochách.")
+            break
+
+    print("Trénování dokončeno.")
+    if best_model_state:
+        print(f"Načítám nejlepší model s validační chybou: {best_val_loss:.6f}")
+        model.load_state_dict(best_model_state)
+    
+    model.eval()
+    return model
