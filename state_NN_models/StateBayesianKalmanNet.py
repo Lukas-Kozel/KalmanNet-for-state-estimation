@@ -16,12 +16,19 @@ class StateBayesianKalmanNet(nn.Module):
 
         self.reset()
 
-    def reset(self,batch_size=1, num_samples=10):
-
-        self.x_filtered_prev = torch.zeros(batch_size, self.state_dim, device=self.device)
-        self.x_filtered_prev_prev = torch.zeros(batch_size, self.state_dim, device=self.device)
+    def reset(self, batch_size=1, num_samples=10,initial_state=None):
+        if initial_state is not None:
+            # Pokud je stav zadán (při tréninku), použijeme ho
+            self.x_filtered_prev = initial_state.clone()
+        else:
+            # Pokud není zadán (při __init__), použijeme nuly
+            self.x_filtered_prev = torch.zeros(batch_size, self.state_dim, device=self.device)
+        
+        # Ostatní stavy se resetují relativně k počátečnímu stavu
+        self.x_filtered_prev_prev = torch.zeros_like(self.x_filtered_prev)
         self.y_prev = torch.zeros(batch_size, self.obs_dim, device=self.device)
-        self.delta_x_prev = torch.zeros(batch_size, self.state_dim, device=self.device)
+        self.delta_x_prev = torch.zeros_like(self.x_filtered_prev)
+        
         self.h_prev_ensemble = torch.zeros(
             num_samples, self.dnn.gru.num_layers, 
             batch_size, self.dnn.gru.hidden_size, 
@@ -68,7 +75,7 @@ class StateBayesianKalmanNet(nn.Module):
         diff = x_filtered_ensemble_tensor - x_filtered_final
         P_filtered_final = (diff.unsqueeze(-1) * diff.unsqueeze(-2)).mean(dim=0)
         
-        avg_regularization = torch.stack(regularization_ensemble).mean()
+        raw_regularization = torch.stack(regularization_ensemble)
 
         self.delta_x_prev = x_filtered_final - x_predicted
         self.x_filtered_prev_prev = self.x_filtered_prev.clone()
@@ -76,4 +83,4 @@ class StateBayesianKalmanNet(nn.Module):
         self.x_filtered_prev = x_filtered_final
         self.h_prev_ensemble = torch.stack(h_new_ensemble, dim=0)
         
-        return x_filtered_final, P_filtered_final, avg_regularization
+        return x_filtered_final, P_filtered_final, raw_regularization

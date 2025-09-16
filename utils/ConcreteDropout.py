@@ -2,7 +2,7 @@ from torch import nn
 import torch
 
 class ConcreteDropout(nn.Module):
-    def __init__(self, weight_regularizer=1e-6, dropout_regularizer=1e-5, init_min=0.5, init_max=0.8,device=None):
+    def __init__(self, weight_regularizer=1e-6, dropout_regularizer=1e-6, init_min=0.5, init_max=0.8,device=None):
         """
         weight_regularizer: váha regularizace vah - ve článku je to l^2
         dropout_regularizer: váha regularizace dropout pravděpodobnosti - ve článku je to K

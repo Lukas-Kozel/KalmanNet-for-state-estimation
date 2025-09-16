@@ -737,26 +737,29 @@ def train_bkn_nll_final(model, train_loader, val_loader, device,
         
     return model
 
-def mse(target, predicted):
-    """Mean Squared Error"""
-    return torch.mean(torch.square(target - predicted))
-
 def empirical_averaging(target, predicted_mean, predicted_var, beta):
-    L1 = mse(target, predicted_mean)
-    L2 = torch.sum(torch.abs((target - predicted_mean.detach())**2 - predicted_var))
-    return (1-beta)*L1 + beta * L2
+    """
+    Vrací celkovou datovou loss a její jednotlivé komponenty pro logování.
+    """
+    # L1 trénuje průměrný odhad.
+    l1_loss = F.mse_loss(predicted_mean, target)
+    
+    L2 = torch.sum(torch.abs((target - predicted_mean)**2 - predicted_var))
+    
+    # Celková datová loss
+    total_data_loss = (1 - beta) * l1_loss + beta * L2
 
+    return total_data_loss, l1_loss, L2
 
 def train_stateful_bkn(model, train_loader, val_loader, device, 
-                       epochs=100, lr=1e-4, clip_grad=1.0, 
+                       epochs=100, lr=1e-4, clip_grad=10.0, 
                        early_stopping_patience=20, 
                        J_samples=10, 
                        final_beta=0.01,
                        beta_warmup_epochs=None):
     """
-    Trénovací funkce pro STAVOVOU `StatefulBayesianKalmanNet`.
+    Finální trénovací funkce pro BKN, která správně inicializuje filtr a ořezává sekvence.
     """
-    # Optimizer nyní vezme všechny parametry modelu, včetně těch v `self.dnn`
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5, verbose=True)
 
@@ -768,106 +771,127 @@ def train_stateful_bkn(model, train_loader, val_loader, device,
     train_count = 0
 
     for epoch in range(epochs):
-        model.train() # Aktivuje `ConcreteDropout`
-        epoch_train_loss = 0.0
+        model.train()
         
+        epoch_total_losses, epoch_l1_losses, epoch_l2_losses, epoch_reg_losses = [], [], [], []
+        all_predicted_vars = []
+        all_empirical_sq_errors = []
+
         for x_true_batch, y_meas_batch in train_loader:
-            x_true_batch = x_true_batch.to(device)
-            y_meas_batch = y_meas_batch.to(device)
+            x_true_batch, y_meas_batch = x_true_batch.to(device), y_meas_batch.to(device)
             
             if beta_warmup_epochs is not None and beta_warmup_epochs > 0:
-                # Strategie č. 1: Warm-up
-                if epoch < beta_warmup_epochs:
-                    beta = 0.0
-                else:
-                    beta = final_beta
+                beta = 0.0 if epoch < beta_warmup_epochs else final_beta
             else:
-                # Strategie č. 2: Lineární inkrementace
                 beta = final_beta * (train_count / total_train_iter)
-
             train_count += 1
 
             optimizer.zero_grad()
             
-            batch_size = x_true_batch.shape[0]
-            seq_len = x_true_batch.shape[1]
+            batch_size, seq_len, _ = x_true_batch.shape
             
-            # DŮLEŽITÉ: Resetujeme stav filtru pro novou dávku
-            model.reset(batch_size=batch_size, num_samples=J_samples)
+            # --- ZMĚNA č. 1: Správná inicializace modelu ---
+            initial_state_batch = x_true_batch[:, 0, :]
+            model.reset(initial_state=initial_state_batch, batch_size=batch_size, num_samples=J_samples)
             
-            # Seznamy pro sběr výsledků celé sekvence
             x_hat_mean_list, sigma_hat_list, reg_list = [], [], []
             
-            # --- SMYČKA PŘES ČASOVOU OSU ---
-            for t in range(seq_len):
+            # --- ZMĚNA č. 2: Smyčka přes čas začíná od 1 ---
+            for t in range(1, seq_len):
                 y_t = y_meas_batch[:, t, :]
-                
-                # Provedeme jeden krok filtrace, získáme všechny 3 výstupy
                 x_filtered_t, P_filtered_t, reg_t = model.step(y_t, num_samples=J_samples)
-                
                 x_hat_mean_list.append(x_filtered_t)
                 sigma_hat_list.append(P_filtered_t)
                 reg_list.append(reg_t)
 
-            # Spojíme výsledky do tenzorů
+            # --- ZMĚNA č. 3: Oříznutí dat pro výpočet loss ---
             x_hat_mean = torch.stack(x_hat_mean_list, dim=1)
             sigma_hat = torch.stack(sigma_hat_list, dim=1)
-            regularization_loss = torch.stack(reg_list).sum()
+            x_true_batch_sliced = x_true_batch[:, 1:, :] # Ořízneme i skutečná data
             
-            # --- Výpočet Loss (logika je stejná jako předtím) ---
+            # Doporučuji průměr pro stabilitu, ale nechávám sum dle vaší preference
+            all_regs_tensor = torch.stack(reg_list, dim=0)
+            regularization_loss = torch.sum(all_regs_tensor)
+            
             predicted_variances = torch.diagonal(sigma_hat, dim1=-2, dim2=-1)
-
-            data_loss = empirical_averaging(
-                target=x_true_batch, 
+            
+            all_predicted_vars.append(predicted_variances.detach().cpu())
+            empirical_squared_error = torch.square(x_true_batch_sliced - x_hat_mean)
+            all_empirical_sq_errors.append(empirical_squared_error.detach().cpu())
+            
+            data_loss, l1_loss, l2_loss = empirical_averaging(
+                target=x_true_batch_sliced, 
                 predicted_mean=x_hat_mean, 
                 predicted_var=predicted_variances,
                 beta=beta
             )
             
             total_loss = data_loss + regularization_loss
-            
-            total_loss.backward() # BPTT se provede automaticky přes kroky `step`
+            total_loss.backward()
             nn.utils.clip_grad_norm_(model.parameters(), clip_grad)
             optimizer.step()
             
-            epoch_train_loss += total_loss.item()
+            epoch_total_losses.append(total_loss.item())
+            epoch_l1_losses.append(l1_loss.item())
+            epoch_l2_losses.append(l2_loss.item())
+            epoch_reg_losses.append(regularization_loss.item())
 
-        avg_train_loss = epoch_train_loss / len(train_loader)
+        avg_train_loss, avg_l1_loss, avg_l2_loss, avg_reg_loss = (np.mean(epoch_total_losses), 
+                                                                  np.mean(epoch_l1_losses), 
+                                                                  np.mean(epoch_l2_losses), 
+                                                                  np.mean(epoch_reg_losses))
+        
+        all_vars_tensor = torch.cat(all_predicted_vars) if all_predicted_vars else torch.tensor([0.])
+        avg_pred_var, min_pred_var, max_pred_var = (torch.mean(all_vars_tensor).item(), 
+                                                    torch.min(all_vars_tensor).item(), 
+                                                    torch.max(all_vars_tensor).item())
 
-        # --- Validační fáze (také stavová) ---
+        all_sq_errors_tensor = torch.cat(all_empirical_sq_errors) if all_empirical_sq_errors else torch.tensor([0.])
+        avg_true_var, min_true_var, max_true_var = (torch.mean(all_sq_errors_tensor).item(), 
+                                                    torch.min(all_sq_errors_tensor).item(), 
+                                                    torch.max(all_sq_errors_tensor).item())
+
+        # --- Validační fáze se stejnou logikou ---
         model.eval()
         val_loss = 0.0
         with torch.no_grad():
             for x_true_val, y_meas_val in val_loader:
-                x_true_val = x_true_val.to(device)
-                y_meas_val = y_meas_val.to(device)
+                x_true_val, y_meas_val = x_true_val.to(device), y_meas_val.to(device)
+                batch_size_val, seq_len_val, _ = x_true_val.shape
                 
-                batch_size_val = x_true_val.shape[0]
-                seq_len_val = x_true_val.shape[1]
-                
-                # `num_samples` pro validaci může být menší
-                model.reset(batch_size=batch_size_val, num_samples=5)
+                # --- ZMĚNA č. 4 (VALIDACE) ---
+                initial_state_val = x_true_val[:, 0, :]
+                model.reset(batch_size=batch_size_val, num_samples=5, initial_state=initial_state_val)
                 
                 val_predictions = []
-                for t in range(seq_len_val):
+                for t in range(1, seq_len_val): # Smyčka také od 1
                     y_t_val = y_meas_val[:, t, :]
-                    # Ignorujeme P a reg, zajímá nás jen odhad pro MSE
                     x_filtered_t_val, _, _ = model.step(y_t_val, num_samples=5)
                     val_predictions.append(x_filtered_t_val)
                 
                 predicted_val_trajectory = torch.stack(val_predictions, dim=1)
-                val_loss += F.mse_loss(predicted_val_trajectory, x_true_val).item()
+                # Porovnáváme s oříznutými skutečnými daty
+                val_loss += F.mse_loss(predicted_val_trajectory, x_true_val[:, 1:, :]).item()
 
         avg_val_loss = val_loss / len(val_loader)
         scheduler.step(avg_val_loss)
 
+        # Logování a Early Stopping zůstávají stejné...
         if (epoch + 1) % 5 == 0:
-            print(f'Epoch [{epoch+1}/{epochs}], Train Loss: {avg_train_loss:.6f}, Val Loss: {avg_val_loss:.6f}, Current Beta: {beta:.4f}')
-            # Logování `p` hodnot
-            p1 = torch.sigmoid(model.dnn.concrete_dropout1.p_logit).item()
-            p2 = torch.sigmoid(model.dnn.concrete_dropout2.p_logit).item()
-            print(f"  Learned p: p1={p1:.4f}, p2={p2:.4f}")
-
+            print(f"--- Epocha [{epoch+1}/{epochs}] ---")
+            print(f"  Val Loss (MSE): {avg_val_loss:.6f} | Current Beta: {beta:.4f}")
+            print(f"  Train Loss:     {avg_train_loss:.6f}")
+            print(f"    ├─ L1 (MSE):   {avg_l1_loss:.6f} (váha: {1-beta:.2f})")
+            print(f"    ├─ L2 (Var L1):{avg_l2_loss:.6f} (váha: {beta:.4f})")
+            print(f"    └─ Regularize: {avg_reg_loss:.6f}")
+            print(f"  Predicted Var Stats: Avg={avg_pred_var:.6f}, Min={min_pred_var:.6f}, Max={max_pred_var:.6f}")
+            print(f"  True Var Stats     : Avg={avg_true_var:.6f}, Min={min_true_var:.6f}, Max={max_true_var:.6f}")
+            if hasattr(model, 'dnn') and hasattr(model.dnn, 'concrete_dropout1'):
+                p1 = torch.sigmoid(model.dnn.concrete_dropout1.p_logit).item()
+                p2 = torch.sigmoid(model.dnn.concrete_dropout2.p_logit).item()
+                print(f"  Learned p: p1={p1:.4f}, p2={p2:.4f}")
+            print("-" * (len(f"--- Epocha [{epoch+1}/{epochs}] ---")))
+        
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
             epochs_no_improve = 0
@@ -878,7 +902,7 @@ def train_stateful_bkn(model, train_loader, val_loader, device,
         if epochs_no_improve >= early_stopping_patience:
             print(f"\nEarly stopping spuštěno po {epoch + 1} epochách.")
             break
-
+            
     print("Trénování dokončeno.")
     if best_model_state:
         print(f"Načítám nejlepší model s validační chybou: {best_val_loss:.6f}")
