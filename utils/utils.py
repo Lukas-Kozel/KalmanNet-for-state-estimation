@@ -1,3 +1,4 @@
+from xml.parsers.expat import model
 import torch
 import torch.nn as nn
 import numpy as np
@@ -5,6 +6,8 @@ import torch.nn.functional as F
 from copy import deepcopy
 
 from NN_models.KalmanNet_withCovMatrix import KalmanNet_withCovMatrix
+
+from state_NN_models.StateKalmanNetWithKnownR import StateKalmanNetWithKnownR
 
 
 # Funkce pro generování dat
@@ -587,6 +590,8 @@ def train_state_KalmanNet(model, train_loader, val_loader, device,
     epochs_no_improve = 0
     best_model_state = None
 
+    returns_covariance = isinstance(model, StateKalmanNetWithKnownR)
+
     for epoch in range(epochs):
         # --- Trénovací fáze ---
         model.train()
@@ -596,25 +601,33 @@ def train_state_KalmanNet(model, train_loader, val_loader, device,
             y_meas_batch = y_meas_batch.to(device)
 
             optimizer.zero_grad()
+            batch_size, seq_len, _ = x_true_batch.shape
 
             # restart vnitřního stavu filtru pro novou dávku
-            model.reset(batch_size=x_true_batch.shape[0])
+            initial_state_batch = x_true_batch[:, 0, :]
+            model.reset(batch_size=batch_size, initial_state=initial_state_batch)
 
 
             predictions = []
-            seq_len = y_meas_batch.shape[1]
 
-            for t in range(seq_len):
+            for t in range(1, seq_len):
 
                 y_t = y_meas_batch[:, t, :]
-
-                x_filtered_t = model.step(y_t)
+                
+                step_output = model.step(y_t)
+                if returns_covariance:
+                    # Pokud step vrací (x, P), vezmeme si jen x
+                    x_filtered_t = step_output[0]
+                else:
+                    # Jinak je výstup přímo x
+                    x_filtered_t = step_output
 
                 predictions.append(x_filtered_t)
 
             predicted_trajectory = torch.stack(predictions, dim=1)
 
-            loss = criterion(predicted_trajectory, x_true_batch)
+            loss = criterion(predicted_trajectory, x_true_batch[:, 1:, :])
+
 
             loss.backward()
 
@@ -638,17 +651,24 @@ def train_state_KalmanNet(model, train_loader, val_loader, device,
                 seq_len_val = x_true_val.shape[1]
                 
                 # Resetujeme stav i pro validaci
-                model.reset(batch_size=batch_size_val)
+                initial_state_val = x_true_val[:, 0, :]
+                model.reset(batch_size=batch_size_val, initial_state=initial_state_val)
                 
                 val_predictions = []
-                for t in range(seq_len_val):
+                for t in range(1,seq_len_val):
                     y_t_val = y_meas_val[:, t, :]
-                    x_filtered_t_val = model.step(y_t_val)
+
+                    step_output_val = model.step(y_t_val)
+                    if returns_covariance:
+                        x_filtered_t_val = step_output_val[0]
+                    else:   
+                        x_filtered_t_val = step_output_val
+
                     val_predictions.append(x_filtered_t_val)
                     
                 predicted_val_trajectory = torch.stack(val_predictions, dim=1)
                 
-                val_loss_batch = criterion(predicted_val_trajectory, x_true_val)
+                val_loss_batch = criterion(predicted_val_trajectory, x_true_val[:, 1:, :])
                 epoch_val_loss += val_loss_batch.item()
 
         avg_val_loss = epoch_val_loss / len(val_loader)
