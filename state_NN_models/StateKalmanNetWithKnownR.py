@@ -66,20 +66,21 @@ class StateKalmanNetWithKnownR(nn.Module):
                 K_i = K[i]  # Kalmanův zisk pro i-tý prvek v batche
 
                 x_predicted_i = x_predicted[i]
+                x_filtered_i = x_filtered[i]
 
                 try:
-                    H_i = torch.autograd.functional.jacobian(self.system_model.h, x_predicted_i).reshape(self.obs_dim, self.state_dim)
+                    H_i = torch.autograd.functional.jacobian(self.system_model.h, x_filtered_i).reshape(self.obs_dim, self.state_dim)
                     I = torch.eye(self.state_dim, device=self.device)
                     if self.state_dim == 1 or self.obs_dim == 1:
                         Htilde_i= 1/(H_i**2)
-                        P_predict_i = K_i * 1 / (self.R*(1- K_i * H_i)) * Htilde_i
                         I_KH_i = (1 - K_i * H_i)
+                        P_predict_i = 1/ (I_KH_i) * K_i * self.R * H_i * Htilde_i
                         P_filtered_i = I_KH_i * P_predict_i * I_KH_i + K_i * self.R * K_i
                         P_filtered_list.append(P_filtered_i)
                     else:    
                         Htilde_i = torch.linalg.inv(H_i.T @ H_i)
-                        P_predict_i = K_i @ torch.linalg.inv(self.R @ (I- K_i @ H_i.T)) @ Htilde_i
                         I_KH_i = (torch.eye(self.state_dim, device=self.device) - K_i @ H_i)
+                        P_predict_i = torch.linalg.inv(I_KH_i) @ K_i @ self.R @ H_i @ Htilde_i
                         P_filtered_i = I_KH_i @ P_predict_i @ I_KH_i.T + K_i @ self.R @ K_i.T
                         P_filtered_list.append(P_filtered_i)
 
