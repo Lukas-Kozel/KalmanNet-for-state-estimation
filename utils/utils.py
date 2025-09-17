@@ -620,22 +620,17 @@ def train_state_KalmanNet(model, train_loader, val_loader, device,
                 
                 step_output = model.step(y_t)
                 if returns_covariance:
-                    # Pokud step vrací (x, P), rozbalíme tuple
                     x_filtered_t, P_filtered_t = step_output
                     predictions_P.append(P_filtered_t)
                 else:
-                    # Jinak je výstup přímo x
                     x_filtered_t = step_output
 
                 predictions_x.append(x_filtered_t)
 
             predicted_trajectory = torch.stack(predictions_x, dim=1)
 
-            # Uložení stopy pro logování
             if returns_covariance and predictions_P:
                 predicted_cov_trajectory = torch.stack(predictions_P, dim=1)
-                # Spočítáme stopu pro každou matici v dávce a zprůměrujeme
-                # vmap zajistí efektivní operaci přes batch a seq_len dimenze
                 avg_trace_batch = torch.mean(torch.vmap(torch.trace)(predicted_cov_trajectory.flatten(0, 1))).item()
                 epoch_traces.append(avg_trace_batch)
 

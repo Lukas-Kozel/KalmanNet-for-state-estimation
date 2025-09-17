@@ -24,13 +24,10 @@ class StateKalmanNetWithKnownR(nn.Module):
     def reset(self,batch_size=1, initial_state=None):
 
         if initial_state is not None:
-            # Použijeme zadaný počáteční stav
             self.x_filtered_prev = initial_state.clone()
         else:
-            # Výchozí chování - start z nul
             self.x_filtered_prev = torch.zeros(batch_size, self.state_dim, device=self.device)
         
-        # Ostatní stavy se resetují relativně k x_filtered_prev
         self.delta_x_prev = torch.zeros_like(self.x_filtered_prev)
         self.h_prev = torch.zeros(1, batch_size, self.dnn.gru.hidden_size, device=self.device)
         

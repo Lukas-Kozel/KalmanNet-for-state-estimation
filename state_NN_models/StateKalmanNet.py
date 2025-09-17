@@ -16,12 +16,16 @@ class StateKalmanNet(nn.Module):
 
         self.reset()
 
-    def reset(self,batch_size=1):
+    def reset(self,batch_size=1, initial_state=None):
 
-        self.x_filtered_prev = torch.zeros(batch_size, self.state_dim, device=self.device)
-        self.delta_x_prev = torch.zeros(batch_size, self.state_dim, device=self.device)
+        if initial_state is not None:
+            self.x_filtered_prev = initial_state.clone()
+        else:
+            self.x_filtered_prev = torch.zeros(batch_size, self.state_dim, device=self.device)
+        
+        self.delta_x_prev = torch.zeros_like(self.x_filtered_prev)
         self.h_prev = torch.zeros(1, batch_size, self.dnn.gru.hidden_size, device=self.device)
-
+        
     def step(self,y_t):
         """
         Provede jeden kompletní krok filtrace pro jedno měření y_t s dimenzí batch_size.
