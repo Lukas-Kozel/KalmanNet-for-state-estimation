@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.func import jacrev
 
 class KalmanNetWithKnownR(nn.Module):
     """
@@ -27,14 +28,16 @@ class KalmanNetWithKnownR(nn.Module):
         self.output_layer = nn.Linear(self.hidden_dim, self.state_dim * self.obs_dim)
 
         # vmap pro nelineární funkce
-        self.f_vmap = torch.vmap(self.system_model.f, in_dims=(0,))
-        self.h_vmap = torch.vmap(self.system_model.h, in_dims=(0,))
-        self.R = system_model.R
+        self.f = system_model.f
+        self.h = system_model.h
+
+        self.R = system_model.R # TODO: upravit, aby model znal vzdy jen diagonalu matice R (aby to co nejlepe reflektovalo realne podminky)
+    
 
     def forward(self, y_seq):
         batch_size, seq_len, _ = y_seq.shape
         
-        x_hat_prev_posterior = torch.zeros(batch_size, self.state_dim, device=self.device)
+        x_filtered_prev = torch.zeros(batch_size, self.state_dim, device=self.device)
         delta_x_hat_update_prev = torch.zeros(batch_size, self.state_dim, device=self.device)
         h = torch.zeros(1, batch_size, self.hidden_dim, device=self.device)
 
@@ -44,11 +47,14 @@ class KalmanNetWithKnownR(nn.Module):
             y_t = y_seq[:, t, :]
             
             # Predikce
-            x_hat_priori = self.f_vmap(x_hat_prev_posterior)
-            y_hat = self.h_vmap(x_hat_priori)
-            
+            x_predicted_list = [self.f(x.unsqueeze(-1)) for x in x_filtered_prev]
+            x_predicted = torch.stack(x_predicted_list).squeeze(-1)
+
+            y_predicted_list = [self.h(x.unsqueeze(-1)) for x in x_predicted]
+            y_predicted = torch.stack(y_predicted_list).squeeze(-1)
+
             # Výpočet vstupů
-            innovation = y_t - y_hat
+            innovation = y_t - y_predicted
 
 
             norm_innovation = F.normalize(innovation, p=2, dim=1, eps=1e-12)
@@ -66,18 +72,28 @@ class KalmanNetWithKnownR(nn.Module):
 
             # Aktualizace stavu
             correction = (K @ innovation.unsqueeze(-1)).squeeze(-1)
-            x_hat_posterior = x_hat_priori + correction
+            x_hat_posterior = x_predicted + correction
 
             # Příprava pro další krok
-            delta_x_hat_update = x_hat_posterior - x_hat_priori
+            delta_x_hat_update = x_hat_posterior - x_predicted
             delta_x_hat_update_prev = delta_x_hat_update.clone()
-            x_hat_prev_posterior = x_hat_posterior.clone()
+            x_filtered_prev = x_hat_posterior.clone()
             
             x_hat_list.append(x_hat_posterior)
-
-            if (self.system_model.H @ self.system_model.H.T).det() != 0:
-                P_predict = K @ self.system_model.R @ (torch.eye(self.state_dim) - K @ self.system_model.H).inverse() @ self.system_model.H.T @ self.system_model.H
-                P_predict_list.append(P_predict)
             
+            # Iterace přes prvky v batche pro výpočet P_predict
+            for i in range(batch_size):
+                K_i = K[i]  # Kalmanův zisk pro i-tý prvek v batche
 
-        return torch.stack(x_hat_list, dim=1)
+                x_predicted_i = x_predicted[i]
+
+                H_t_i = jacrev(self.h)(x_predicted_i.squeeze()).reshape(self.obs_dim, self.state_dim)
+
+                I = torch.eye(self.state_dim, device=self.device)
+
+                if(H_t_i @ H_t_i.T).det() != 0:
+                    P_predict_i = K_i @ self.R @ (I- K_i @ H_t_i.T).inverse() @ H_t_i.T @ H_t_i
+                    P_predict_list.append(P_predict_i)
+                    
+
+        return torch.stack(x_hat_list, dim=1), torch.stack(P_predict_list, dim=1)

@@ -3,18 +3,23 @@ import torch.nn as nn
 import torch.nn.functional as F
 from .DNN_KalmanNet import DNN_KalmanNet
 
-class StateKalmanNet(nn.Module):
+class StateKalmanNetWithKnownR(nn.Module):
     def __init__(self,system_model, device, hidden_size_multiplier=10):
-        super(StateKalmanNet, self).__init__()
+        super(StateKalmanNetWithKnownR, self).__init__()
 
         self.device = device
         self.system_model = system_model
         self.state_dim = system_model.state_dim
         self.obs_dim = system_model.obs_dim
 
+        self.R = torch.diag(system_model.R).to(device)
+        self.P0 = system_model.P0.to(device)
+
         self.dnn = DNN_KalmanNet(system_model, hidden_size_multiplier).to(device)
 
         self.reset()
+
+
 
     def reset(self,batch_size=1, initial_state=None):
 
@@ -26,6 +31,7 @@ class StateKalmanNet(nn.Module):
         self.delta_x_prev = torch.zeros_like(self.x_filtered_prev)
         self.h_prev = torch.zeros(1, batch_size, self.dnn.gru.hidden_size, device=self.device)
         
+
     def step(self,y_t):
         """
         Provede jeden kompletní krok filtrace pro jedno měření y_t s dimenzí batch_size.
@@ -51,8 +57,36 @@ class StateKalmanNet(nn.Module):
         correction = (K @ innovation.unsqueeze(-1)).squeeze(-1)
         x_filtered = x_predicted + correction
 
+        P_filtered_list = []
+        with torch.no_grad(): # pro jistotu vypnutí gradienty
+            for i in range(batch_size):
+                K_i = K[i]  # Kalmanův zisk pro i-tý prvek v batche
+
+                x_predicted_i = x_predicted[i]
+                x_filtered_i = x_filtered[i]
+
+                try:
+                    H_i = torch.autograd.functional.jacobian(self.system_model.h, x_filtered_i).reshape(self.obs_dim, self.state_dim)
+                    I = torch.eye(self.state_dim, device=self.device)
+                    if self.state_dim == 1 or self.obs_dim == 1:
+                        Htilde_i= 1/(H_i**2)
+                        I_KH_i = (1 - K_i * H_i)
+                        P_predict_i = 1/ (I_KH_i) * K_i * self.R * H_i * Htilde_i
+                        P_filtered_i = I_KH_i * P_predict_i * I_KH_i + K_i * self.R * K_i
+                        P_filtered_list.append(P_filtered_i)
+                    else:    
+                        Htilde_i = torch.linalg.inv(H_i.T @ H_i)
+                        I_KH_i = (torch.eye(self.state_dim, device=self.device) - K_i @ H_i)
+                        P_predict_i = torch.linalg.inv(I_KH_i) @ K_i @ self.R @ H_i @ Htilde_i
+                        P_filtered_i = I_KH_i @ P_predict_i @ I_KH_i.T + K_i @ self.R @ K_i.T
+                        P_filtered_list.append(P_filtered_i)
+
+                except:
+                    print("Failed at Uncertainty Analysis of KalmanNet V1")
+
+        P_filtered = torch.stack(P_filtered_list)
         self.delta_x_prev = x_filtered - x_predicted
         self.x_filtered_prev = x_filtered
         self.h_prev = h_new
 
-        return x_filtered
+        return x_filtered, P_filtered

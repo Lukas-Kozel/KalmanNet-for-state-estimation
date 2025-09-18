@@ -1,3 +1,4 @@
+from xml.parsers.expat import model
 import torch
 import torch.nn as nn
 import numpy as np
@@ -5,6 +6,8 @@ import torch.nn.functional as F
 from copy import deepcopy
 
 from NN_models.KalmanNet_withCovMatrix import KalmanNet_withCovMatrix
+
+from state_NN_models.StateKalmanNetWithKnownR import StateKalmanNetWithKnownR
 
 
 # Funkce pro generování dat
@@ -578,7 +581,7 @@ def train_bkn_with_logging(model, train_loader, val_loader, device,
     return model
 
 def train_state_KalmanNet(model, train_loader, val_loader, device, 
-                          epochs=100, lr=1e-3, clip_grad=1.0, early_stopping_patience=20):
+                          epochs=100, lr=1e-3, clip_grad=10, early_stopping_patience=20):
     criterion = nn.MSELoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5, verbose=True)
@@ -587,44 +590,59 @@ def train_state_KalmanNet(model, train_loader, val_loader, device,
     epochs_no_improve = 0
     best_model_state = None
 
+    # Zjistíme si předem, zda model vrací i kovarianci, abychom mohli upravit logiku
+    returns_covariance = isinstance(model, StateKalmanNetWithKnownR)
+
     for epoch in range(epochs):
         # --- Trénovací fáze ---
         model.train()
         train_loss = 0.0
+        
+        # Seznam pro sběr průměrných stop kovariancí z každé dávky
+        epoch_traces = []
+
         for x_true_batch, y_meas_batch in train_loader:
             x_true_batch = x_true_batch.to(device)
             y_meas_batch = y_meas_batch.to(device)
 
             optimizer.zero_grad()
+            batch_size, seq_len, _ = x_true_batch.shape
 
             # restart vnitřního stavu filtru pro novou dávku
-            model.reset(batch_size=x_true_batch.shape[0])
+            initial_state_batch = x_true_batch[:, 0, :]
+            model.reset(batch_size=batch_size, initial_state=initial_state_batch)
 
+            predictions_x = []
+            predictions_P = []
 
-            predictions = []
-            seq_len = y_meas_batch.shape[1]
-
-            for t in range(seq_len):
-
+            for t in range(1, seq_len):
                 y_t = y_meas_batch[:, t, :]
+                
+                step_output = model.step(y_t)
+                if returns_covariance:
+                    x_filtered_t, P_filtered_t = step_output
+                    predictions_P.append(P_filtered_t)
+                else:
+                    x_filtered_t = step_output
 
-                x_filtered_t = model.step(y_t)
+                predictions_x.append(x_filtered_t)
 
-                predictions.append(x_filtered_t)
+            predicted_trajectory = torch.stack(predictions_x, dim=1)
 
-            predicted_trajectory = torch.stack(predictions, dim=1)
+            if returns_covariance and predictions_P:
+                predicted_cov_trajectory = torch.stack(predictions_P, dim=1)
+                avg_trace_batch = torch.mean(torch.vmap(torch.trace)(predicted_cov_trajectory.flatten(0, 1))).item()
+                epoch_traces.append(avg_trace_batch)
 
-            loss = criterion(predicted_trajectory, x_true_batch)
-
+            loss = criterion(predicted_trajectory, x_true_batch[:, 1:, :])
             loss.backward()
-
             nn.utils.clip_grad_norm_(model.parameters(), clip_grad)
-
             optimizer.step()
 
             train_loss += loss.item()
         
         avg_train_loss = train_loss / len(train_loader)
+        avg_epoch_trace = np.mean(epoch_traces) if epoch_traces else 0.0
 
          # --- Validační fáze ---
         model.eval()
@@ -634,28 +652,35 @@ def train_state_KalmanNet(model, train_loader, val_loader, device,
                 x_true_val = x_true_val.to(device)
                 y_meas_val = y_meas_val.to(device)
                 
-                batch_size_val = x_true_val.shape[0]
-                seq_len_val = x_true_val.shape[1]
+                batch_size_val, seq_len_val, _ = x_true_val.shape
                 
-                # Resetujeme stav i pro validaci
-                model.reset(batch_size=batch_size_val)
+                initial_state_val = x_true_val[:, 0, :]
+                model.reset(batch_size=batch_size_val, initial_state=initial_state_val)
                 
                 val_predictions = []
-                for t in range(seq_len_val):
+                for t in range(1, seq_len_val):
                     y_t_val = y_meas_val[:, t, :]
-                    x_filtered_t_val = model.step(y_t_val)
+
+                    step_output_val = model.step(y_t_val)
+                    if returns_covariance:
+                        x_filtered_t_val = step_output_val[0]
+                    else:   
+                        x_filtered_t_val = step_output_val
+
                     val_predictions.append(x_filtered_t_val)
                     
                 predicted_val_trajectory = torch.stack(val_predictions, dim=1)
-                
-                val_loss_batch = criterion(predicted_val_trajectory, x_true_val)
+                val_loss_batch = criterion(predicted_val_trajectory, x_true_val[:, 1:, :])
                 epoch_val_loss += val_loss_batch.item()
 
         avg_val_loss = epoch_val_loss / len(val_loader)
         scheduler.step(avg_val_loss)
         
         if (epoch + 1) % 5 == 0:
-            print(f'Epoch [{epoch+1}/{epochs}], Train Loss: {avg_train_loss:.6f}, Val Loss: {avg_val_loss:.6f}')
+            log_message = f'Epoch [{epoch+1}/{epochs}], Train Loss: {avg_train_loss:.6f}, Val Loss: {avg_val_loss:.6f}'
+            if returns_covariance:
+                log_message += f', Avg Cov Trace: {avg_epoch_trace:.6f}'
+            print(log_message)
         
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
