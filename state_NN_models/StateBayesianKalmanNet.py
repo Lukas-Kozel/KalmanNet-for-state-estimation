@@ -19,7 +19,7 @@ class StateBayesianKalmanNet(nn.Module):
     def reset(self, batch_size=1, num_samples=10,initial_state=None):
         if initial_state is not None:
             # Pokud je stav zadán (při tréninku), použijeme ho
-            self.x_filtered_prev = initial_state.clone()
+            self.x_filtered_prev = initial_state.detach().clone()
         else:
             # Pokud není zadán (při __init__), použijeme nuly
             self.x_filtered_prev = torch.zeros(batch_size, self.state_dim, device=self.device)
