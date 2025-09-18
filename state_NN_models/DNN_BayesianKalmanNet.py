@@ -14,7 +14,7 @@ class DNN_BayesianKalmanNet(nn.Module):
         self.device = system_model.device
 
         self.H1 = (self.state_dim + self.obs_dim) * hidden_size_multiplier * 8
-        self.H2 = (self.state_dim * self.obs_dim) * output_layer_multiplier * 4
+        self.H2 = (self.state_dim * self.obs_dim) * output_layer_multiplier * 1
 
         self.input_dim = 2 * self.state_dim + 2 * self.obs_dim
         self.output_dim = self.state_dim * self.obs_dim
@@ -25,13 +25,14 @@ class DNN_BayesianKalmanNet(nn.Module):
             nn.ReLU()
         )
         self.concrete_dropout1 = ConcreteDropout(device=self.device, init_min=init_min_dropout, init_max=init_max_dropout)
-        gru_hidden_dim = ((self.state_dim * self.state_dim) + (self.obs_dim * self.obs_dim)) * 10
+        gru_hidden_dim = 4* ((self.state_dim * self.state_dim) + (self.obs_dim * self.obs_dim))
+        
         self.gru = nn.GRU(self.H1, gru_hidden_dim, num_layers=num_gru_layers)
 
         self.output_layer = nn.Sequential(
             nn.Linear(gru_hidden_dim, self.H2),
             nn.ReLU(),
-            nn.Linear(self.H2, self.output_dim)
+            nn.Linear(self.H2, self.output_dim, bias=True)
         )
         self.concrete_dropout2 = ConcreteDropout(device=self.device, init_min=init_min_dropout, init_max=init_max_dropout)
 
@@ -42,7 +43,7 @@ class DNN_BayesianKalmanNet(nn.Module):
         regularization = []
         activated_input, reg1 = self.concrete_dropout1(nn_input, self.input_layer)
         regularization.append(reg1)
-        out_gru,h_new = self.gru(activated_input.unsqueeze(0), h_prev)
+        out_gru, h_new = self.gru(activated_input.unsqueeze(0), h_prev)
 
         out_gru_squeezed = out_gru.squeeze(0)
 
