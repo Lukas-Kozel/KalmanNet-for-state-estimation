@@ -62,7 +62,6 @@ class StateKalmanNetWithKnownR(nn.Module):
             for i in range(batch_size):
                 K_i = K[i]  # Kalmanův zisk pro i-tý prvek v batche
 
-                x_predicted_i = x_predicted[i]
                 x_filtered_i = x_filtered[i]
 
                 try:
