@@ -20,8 +20,8 @@ class AdaptiveExtendedKalmanFilter:
             self.H = system_model.H
         
  
-        self.state_dim = self.Q.shape[0]
-        self.obs_dim = self.R.shape[0]
+        self.state_dim = system_model.state_dim
+        self.obs_dim = system_model.obs_dim
 
         self.x_filtered_prev = None
         self.P_filtered_prev = None
@@ -64,27 +64,31 @@ class AdaptiveExtendedKalmanFilter:
             H_t = jacrev(self.h)(x_predict.squeeze()).reshape(self.obs_dim, self.state_dim)
             
         innovation = y_t - self.h(x_predict)
-        S = H_t @ P_predict @ H_t.T + self.R
+        S = H_t @ P_predict @ H_t.T + self.R_prev
         K = P_predict @ H_t.T @ torch.linalg.inv(S)
         x_filtered = x_predict + K @ innovation
         
 
         I = torch.eye(self.state_dim, device=self.device)
-        P_filtered = (I - K @ H_t) @ P_predict @ (I - K @ H_t).T + K @ self.R @ K.T
+        P_filtered = (I - K @ H_t) @ P_predict @ (I - K @ H_t).T + K @ self.R_prev @ K.T
         
         return x_filtered, P_filtered, K, innovation
     
-    def measurement_covariance_update(self, y_t,x_filtered, P_predict, alpha=0.01):
+    def measurement_covariance_update(self, y_t,x_filtered, P_filtered):
         residual = y_t - self.h(x_filtered)
         if self.is_linear_h:
             H = self.H
         else:
             H = jacrev(self.h)(x_filtered.squeeze()).reshape(self.obs_dim, self.state_dim)
-            
-        
-        R = alpha*self.R_prev + (1-alpha) *(residual @ residual.T + H @ P_predict @ H.T)
+
+
+        R = self.alpha*self.R_prev + (1-self.alpha) *(residual @ residual.T + H @ P_filtered @ H.T)
 
         return R
+    
+    def state_covariance_update(self, K, innovation):
+        Q = self.alpha*self.Q_prev + (1-self.alpha) *(K @ innovation @ innovation.T @ K.T)
+        return Q
 
     def step(self, y_t):
         """
@@ -94,8 +98,10 @@ class AdaptiveExtendedKalmanFilter:
         x_predict, P_predict = self.predict_step(self.x_filtered_prev, self.P_filtered_prev)
         
         # 2. Update s novým měřením
-        x_filtered, P_filtered = self.update_step(x_predict, y_t, P_predict)
+        x_filtered, P_filtered, K, innovation = self.update_step(x_predict, y_t, P_predict)
         
+        self.Q_prev = self.state_covariance_update(K, innovation)
+        self.R_prev = self.measurement_covariance_update(y_t, x_filtered, P_predict) 
         # 3. Aktualizace interního stavu pro další volání
         self.x_filtered_prev = x_filtered
         self.P_filtered_prev = P_filtered
@@ -125,6 +131,9 @@ class AdaptiveExtendedKalmanFilter:
                 
                 # 2. Update
                 x_est, P_est, K, innovation = self.update_step(x_predict, y_seq[t], P_predict)
+
+                self.Q_prev = self.state_covariance_update(K, innovation)
+                self.R_prev = self.measurement_covariance_update(y_seq[t], x_est, P_predict) 
                 
                 x_filtered_history[t] = x_est.squeeze()
                 P_filtered_history[t] = P_est
