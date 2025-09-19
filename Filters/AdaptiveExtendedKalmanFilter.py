@@ -81,13 +81,15 @@ class AdaptiveExtendedKalmanFilter:
         else:
             H = jacrev(self.h)(x_filtered.squeeze()).reshape(self.obs_dim, self.state_dim)
 
-
         R = self.alpha*self.R_prev + (1-self.alpha) *(residual @ residual.T + H @ P_filtered @ H.T)
-
+        r_floor = 1e-6
+        R = R + torch.eye(self.obs_dim, device=self.device) * r_floor
         return R
     
     def state_covariance_update(self, K, innovation):
         Q = self.alpha*self.Q_prev + (1-self.alpha) *(K @ innovation @ innovation.T @ K.T)
+        q_floor = 1e-7  # Minimální hodnota procesního šumu
+        Q = Q + torch.eye(self.state_dim, device=self.device) * q_floor 
         return Q
 
     def step(self, y_t):
@@ -101,7 +103,7 @@ class AdaptiveExtendedKalmanFilter:
         x_filtered, P_filtered, K, innovation = self.update_step(x_predict, y_t, P_predict)
         
         self.Q_prev = self.state_covariance_update(K, innovation)
-        self.R_prev = self.measurement_covariance_update(y_t, x_filtered, P_predict) 
+        self.R_prev = self.measurement_covariance_update(y_t, x_filtered, P_filtered) 
         # 3. Aktualizace interního stavu pro další volání
         self.x_filtered_prev = x_filtered
         self.P_filtered_prev = P_filtered
@@ -133,7 +135,7 @@ class AdaptiveExtendedKalmanFilter:
                 x_est, P_est, K, innovation = self.update_step(x_predict, y_seq[t], P_predict)
 
                 self.Q_prev = self.state_covariance_update(K, innovation)
-                self.R_prev = self.measurement_covariance_update(y_seq[t], x_est, P_predict) 
+                self.R_prev = self.measurement_covariance_update(y_seq[t], x_est, P_filtered=P_est) 
                 
                 x_filtered_history[t] = x_est.squeeze()
                 P_filtered_history[t] = P_est

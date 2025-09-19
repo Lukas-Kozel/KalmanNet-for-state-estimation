@@ -30,6 +30,10 @@ def generate_data(system, num_trajectories, seq_len):
             y_data[i, t, :] = y.squeeze()
     return x_data, y_data
 
+def store_model(model, path):
+    torch.save(model.state_dict(), path)
+    print(f"Model byl uložen do {path}")
+
 # Trénovací funkce
 def train(model, train_loader,device, epochs=50, lr=1e-4, clip_grad=1.0):
     criterion = nn.MSELoss()
