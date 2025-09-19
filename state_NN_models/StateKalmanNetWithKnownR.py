@@ -65,7 +65,10 @@ class StateKalmanNetWithKnownR(nn.Module):
                 x_filtered_i = x_filtered[i]
 
                 try:
-                    H_i = torch.autograd.functional.jacobian(self.system_model.h, x_filtered_i).reshape(self.obs_dim, self.state_dim)
+                    if self.system_model.is_linear_h:
+                        H_i = self.system_model.H
+                    else:
+                        H_i = torch.autograd.functional.jacobian(self.system_model.h, x_filtered_i).reshape(self.obs_dim, self.state_dim)
                     I = torch.eye(self.state_dim, device=self.device)
                     if self.state_dim == 1 or self.obs_dim == 1:
                         Htilde_i= 1/(H_i**2)
