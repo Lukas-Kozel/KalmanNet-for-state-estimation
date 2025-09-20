@@ -1,13 +1,15 @@
 import torch
 from torch.func import jacrev 
 
-class ExtendedKalmanFilter:
-    def __init__(self, system_model):
+class AdaptiveExtendedKalmanFilter:
+    def __init__(self, system_model, Q_init=None, R_init=None,alpha=0.3):
    
         self.device = system_model.Q.device
         
         self.f = system_model.f
         self.h = system_model.h
+
+        self.alpha = alpha
         
         # Pokud je systém lineární, Jakobiány jsou konstantní matice F a H
         self.is_linear_f = getattr(system_model, 'is_linear_f', False)
@@ -18,26 +20,30 @@ class ExtendedKalmanFilter:
             self.H = system_model.H
         
  
-        self.Q = system_model.Q.clone().detach().to(self.device)
-        self.R = system_model.R.clone().detach().to(self.device)
-
-        self.state_dim = self.Q.shape[0]
-        self.obs_dim = self.R.shape[0]
+        self.state_dim = system_model.state_dim
+        self.obs_dim = system_model.obs_dim
 
         self.x_filtered_prev = None
         self.P_filtered_prev = None
-        
-        self.reset(system_model.Ex0, system_model.P0)
 
-    def reset(self, Ex0=None, P0=None):
+        self.Q_prev = None
+        self.R_prev = None
+
+        
+        self.reset(system_model.Ex0, system_model.P0,Q_init=Q_init, R_init=R_init)
+
+    def reset(self, Ex0=None, P0=None,Q_init=None, R_init=None):
         """
         Inicializuje nebo resetuje stav filtru.
         """
         if Ex0 is not None:
-            # Ujistíme se, že má správný tvar [dim, 1]
             self.x_filtered_prev = Ex0.clone().detach().reshape(self.state_dim, 1)
         if P0 is not None:
             self.P_filtered_prev = P0.clone().detach()
+        if Q_init is not None:
+            self.Q_prev = Q_init.clone().detach()
+        if R_init is not None:
+            self.R_prev = R_init.clone().detach()
 
     def predict_step(self, x_filtered, P_filtered):
         if self.is_linear_f:
@@ -46,7 +52,7 @@ class ExtendedKalmanFilter:
             F_t = jacrev(self.f)(x_filtered.squeeze()).reshape(self.state_dim, self.state_dim)
 
         x_predict = self.f(x_filtered)
-        P_predict = F_t @ P_filtered @ F_t.T + self.Q
+        P_predict = F_t @ P_filtered @ F_t.T + self.Q_prev
         return x_predict, P_predict
 
     def update_step(self, x_predict, y_t, P_predict):
@@ -58,15 +64,36 @@ class ExtendedKalmanFilter:
             H_t = jacrev(self.h)(x_predict.squeeze()).reshape(self.obs_dim, self.state_dim)
             
         innovation = y_t - self.h(x_predict)
-        S = H_t @ P_predict @ H_t.T + self.R
+        S = H_t @ P_predict @ H_t.T + self.R_prev
         K = P_predict @ H_t.T @ torch.linalg.inv(S)
         x_filtered = x_predict + K @ innovation
         
 
         I = torch.eye(self.state_dim, device=self.device)
-        P_filtered = (I - K @ H_t) @ P_predict @ (I - K @ H_t).T + K @ self.R @ K.T
+        P_filtered = (I - K @ H_t) @ P_predict @ (I - K @ H_t).T + K @ self.R_prev @ K.T
         
+        p_floor = 1e-6
+        P_filtered = P_filtered + torch.eye(self.state_dim, device=self.device) * p_floor
+
         return x_filtered, P_filtered, K, innovation
+    
+    def measurement_covariance_update(self, y_t,x_filtered, P_filtered):
+        residual = y_t - self.h(x_filtered)
+        if self.is_linear_h:
+            H = self.H
+        else:
+            H = jacrev(self.h)(x_filtered.squeeze()).reshape(self.obs_dim, self.state_dim)
+
+        R = self.alpha*self.R_prev + (1-self.alpha) *(residual @ residual.T + H @ P_filtered @ H.T)
+        r_floor = 1e-6
+        R = R + torch.eye(self.obs_dim, device=self.device) * r_floor
+        return R
+    
+    def state_covariance_update(self, K, innovation):
+        Q = self.alpha*self.Q_prev + (1-self.alpha) *(K @ innovation @ innovation.T @ K.T)
+        q_floor = 1e-7  # Minimální hodnota procesního šumu
+        Q = Q + torch.eye(self.state_dim, device=self.device) * q_floor 
+        return Q
 
     def step(self, y_t):
         """
@@ -76,8 +103,10 @@ class ExtendedKalmanFilter:
         x_predict, P_predict = self.predict_step(self.x_filtered_prev, self.P_filtered_prev)
         
         # 2. Update s novým měřením
-        x_filtered, P_filtered = self.update_step(x_predict, y_t, P_predict)
+        x_filtered, P_filtered, K, innovation = self.update_step(x_predict, y_t, P_predict)
         
+        self.Q_prev = self.state_covariance_update(K, innovation)
+        self.R_prev = self.measurement_covariance_update(y_t, x_filtered, P_filtered) 
         # 3. Aktualizace interního stavu pro další volání
         self.x_filtered_prev = x_filtered
         self.P_filtered_prev = P_filtered
@@ -107,6 +136,9 @@ class ExtendedKalmanFilter:
                 
                 # 2. Update
                 x_est, P_est, K, innovation = self.update_step(x_predict, y_seq[t], P_predict)
+
+                self.Q_prev = self.state_covariance_update(K, innovation)
+                self.R_prev = self.measurement_covariance_update(y_seq[t], x_est, P_filtered=P_est) 
                 
                 x_filtered_history[t] = x_est.squeeze()
                 P_filtered_history[t] = P_est
