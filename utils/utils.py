@@ -34,6 +34,42 @@ def store_model(model, path):
     torch.save(model.state_dict(), path)
     print(f"Model byl uložen do {path}")
 
+def calculate_anees(x_true_list, x_hat_list, P_hat_list):
+    """
+    Vypočítá Average NEES (ANEES) ze seznamů trajektorií.
+    """
+    num_runs = len(x_true_list)
+    if num_runs == 0:
+        return 0.0
+        
+    total_nees = 0.0
+    for i in range(num_runs):
+        x_true = x_true_list[i]
+        x_hat = x_hat_list[i]
+        P_hat = P_hat_list[i]
+        
+        seq_len = x_true.shape[0]
+        state_dim = x_true.shape[1]
+        nees_samples_run = torch.zeros(seq_len)
+
+        for t in range(seq_len):
+            error = x_true[t] - x_hat[t]
+            P_t = P_hat[t]
+            
+            P_t_matrix = P_t.reshape(state_dim, state_dim)
+                
+            P_stable = P_t_matrix + torch.eye(state_dim, device=P_t_matrix.device) * 1e-9
+            
+            try:
+                P_inv = torch.inverse(P_stable)
+                nees_samples_run[t] = error.unsqueeze(0) @ P_inv @ error.unsqueeze(-1)
+            except torch.linalg.LinAlgError:
+                nees_samples_run[t] = float('nan')
+            
+        total_nees += torch.nanmean(nees_samples_run).item()
+        
+    return total_nees / num_runs
+
 # Trénovací funkce
 def train(model, train_loader,device, epochs=50, lr=1e-4, clip_grad=10):
     criterion = nn.MSELoss()
@@ -1442,20 +1478,13 @@ def train_variance_diagnostic(
     
 #     model.eval()
 #     return model
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import numpy as np
-from copy import deepcopy
 
-# Předpokládáme, že tato ztrátová funkce je definována ve stejném souboru nebo správně naimportována
+# Používáme robustnější L2 ztrátu
 def empirical_averaging_detached_sum(target, predicted_mean, predicted_var, beta):
-    """
-    Ztrátová funkce s oddělenými gradienty, která používá SUM pro L2 složku.
-    """
     l1_loss = F.mse_loss(predicted_mean, target)
     empirical_variance = torch.square(target - predicted_mean).detach()
-    l2_loss = torch.sum(torch.abs(empirical_variance - predicted_var))
+    # Použití průměru absolutních chyb je robustnější než MSE na variancích
+    l2_loss = torch.mean(torch.abs(empirical_variance - predicted_var))
     total_data_loss = (1 - beta) * l1_loss + beta * l2_loss
     return total_data_loss, l1_loss, l2_loss
 
@@ -1471,12 +1500,8 @@ def train_bkn_with_empirical_averaging(
     validation_period=100,
     logging_period=25,
     pretrain_iters=1000,
-    final_beta=0.01
+    final_beta=0.8  # Zvýšená hodnota pro silnější učení variance
 ):
-    """
-    Přesná replika trénovacího procesu autorů s dvoufázovým tréninkem
-    a detailním logováním, přizpůsobená pro vaši iterativní `StateBayesianKalmanNet`.
-    """
     optimizer = torch.optim.Adam(model.parameters(), lr=lr_phase1)
     
     best_val_loss = float('inf')
@@ -1505,51 +1530,45 @@ def train_bkn_with_empirical_averaging(
             x_true_batch, y_meas_batch = x_true_batch.to(device), y_meas_batch.to(device)
             optimizer.zero_grad()
             
-            # beta = 0.0 if phase == 1 else 1.0
+            # Agresivnější beta plánovač
+            if phase == 1:
+                beta = 0.0
+            else:
+                current_phase_iter = train_iter_count - pretrain_iters
+                ramp_up_period = (total_train_iter - pretrain_iters) * 0.5 # Dosáhne plné bety v polovině fáze 2
+                beta = final_beta * min(1.0, current_phase_iter / ramp_up_period)
+
+            batch_size, seq_len, _ = x_true_batch.shape
             
-            beta = final_beta * (train_iter_count / total_train_iter)
-            batch_size, seq_len, state_dim = x_true_batch.shape
+            all_predicted_ensembles = []
+            all_regularizations = []
+
+            initial_state = x_true_batch[:, 0, :]
+            model.reset(batch_size=batch_size, num_samples=J_samples, initial_state=initial_state)
+
+            for t in range(1, seq_len):
+                y_t = y_meas_batch[:, t, :]
+                x_filtered_ensemble, regularization = model.step(y_t, num_samples=J_samples)
+                all_predicted_ensembles.append(x_filtered_ensemble)
+                all_regularizations.append(regularization)
+
+            predicted_ensembles_tensor = torch.stack(all_predicted_ensembles, dim=1).permute(2, 1, 0, 3)
+
+            predicted_means = predicted_ensembles_tensor.mean(dim=2)
+            predicted_variances = predicted_ensembles_tensor.var(dim=2, unbiased=True)
+
+            total_regularization_loss = torch.stack(all_regularizations).mean()
             
-            x_hat_temp = torch.zeros((batch_size, seq_len, state_dim, J_samples), device=device)
-            regularization_temp = torch.zeros((batch_size, 2, seq_len, J_samples), device=device)
-
-            for i in range(batch_size):
-                for mc_ind in range(J_samples):
-                    initial_state = x_true_batch[i, 0, :].unsqueeze(-1)
-                    
-                    # --- OPRAVA ZDE ---
-                    # Modelu předáme jen měření od t=1, protože stav v t=0 je daný.
-                    y_sequence_sliced = y_meas_batch[i, 1:, :]
-                    
-                    # Nyní model zpracuje `seq_len - 1` měření.
-                    state_history, reg_history = model(y_sequence_sliced, initial_state)
-                    
-                    # `state_history` teď obsahuje `1 (initial) + (seq_len - 1)` kroků = `seq_len` kroků.
-                    # Její tvar je [dim, seq_len], po transpozici [seq_len, dim].
-                    # To se vejde do x_hat_temp[i, :, :, mc_ind], který má tvar [seq_len, dim].
-                    x_hat_temp[i, :, :, mc_ind] = state_history.T
-                    
-                    reg_hist_padded = F.pad(reg_history, (1, 0), "constant", 0)
-                    regularization_temp[i, :, :, mc_ind] = reg_hist_padded
-
-            x_hat = torch.mean(x_hat_temp, dim=-1)
-            predicted_variances = torch.var(x_hat_temp, dim=-1, unbiased=True)
-            regularization = torch.mean(regularization_temp, dim=-1)
-
-            x_true_sliced = x_true_batch[:, 1:, :]
-            x_hat_sliced = x_hat[:, 1:, :]
-            predicted_variances_sliced = predicted_variances[:, 1:, :]
-            regularization_sliced = regularization[:, :, 1:]
+            target_sequence = x_true_batch[:, 1:, :]
             
             data_loss, l1_loss, l2_loss = empirical_averaging_detached_sum(
-                target=x_true_sliced, 
-                predicted_mean=x_hat_sliced, 
-                predicted_var=predicted_variances_sliced,
+                target=target_sequence, 
+                predicted_mean=predicted_means, 
+                predicted_var=predicted_variances,
                 beta=beta
             )
             
-            regularization_loss = torch.sum(regularization_sliced)
-            total_loss = data_loss + reg_weight * regularization_loss
+            total_loss = data_loss + reg_weight * total_regularization_loss
 
             if torch.isnan(total_loss) or torch.isinf(total_loss):
                 print(f"!!! Kolaps v iteraci {train_iter_count}, ztráta je NaN/Inf. Ukončuji. !!!")
@@ -1557,7 +1576,8 @@ def train_bkn_with_empirical_averaging(
                 break
 
             total_loss.backward()
-            nn.utils.clip_grad_norm_(model.parameters(), clip_grad)
+            if clip_grad > 0:
+                nn.utils.clip_grad_norm_(model.parameters(), clip_grad)
             optimizer.step()
             train_iter_count += 1
 
@@ -1566,17 +1586,17 @@ def train_bkn_with_empirical_averaging(
                 print("--- Loss Stats ---")
                 print(f"  Total Loss:       {total_loss.item():.6f} | Current Beta: {beta:.4f}")
                 print(f"    ├─ L1 (MSE):   {l1_loss.item():.6f} (váha: {1-beta:.2f})")
-                print(f"    ├─ L2 (Var Sum):{l2_loss.item():.6f} (váha: {beta:.4f})")
-                print(f"    └─ Regularize: {regularization_loss.item():.6f} (váha: {reg_weight})")
+                print(f"    ├─ L2 (Var MSE):{l2_loss.item():.6f} (váha: {beta:.4f})")
+                print(f"    └─ Regularize: {total_regularization_loss.item():.6f} (váha: {reg_weight})")
                 
                 with torch.no_grad():
-                    empirical_variances = torch.square(x_true_sliced - x_hat_sliced)
+                    empirical_variances = torch.square(target_sequence - predicted_means)
                     print("--- Variance Stats ---")
-                    print(f"  Predicted Var -> Avg: {torch.mean(predicted_variances_sliced).item():.6f}, Min: {torch.min(predicted_variances_sliced).item():.6f}, Max: {torch.max(predicted_variances_sliced).item():.6f}")
+                    print(f"  Predicted Var -> Avg: {torch.mean(predicted_variances).item():.6f}, Min: {torch.min(predicted_variances).item():.6f}, Max: {torch.max(predicted_variances).item():.6f}")
                     print(f"  True Var      -> Avg: {torch.mean(empirical_variances).item():.6f}, Min: {torch.min(empirical_variances).item():.6f}, Max: {torch.max(empirical_variances).item():.6f}")
                     print("--- Mean (State) Stats ---")
-                    print(f"  Predicted Mean-> Avg: {torch.mean(x_hat_sliced).item():.6f}, Min: {torch.min(x_hat_sliced).item():.6f}, Max: {torch.max(x_hat_sliced).item():.6f}")
-                    print(f"  True Mean     -> Avg: {torch.mean(x_true_sliced).item():.6f}, Min: {torch.min(x_true_sliced).item():.6f}, Max: {torch.max(x_true_sliced).item():.6f}")
+                    print(f"  Predicted Mean-> Avg: {torch.mean(predicted_means).item():.6f}, Min: {torch.min(predicted_means).item():.6f}, Max: {torch.max(predicted_means).item():.6f}")
+                    print(f"  True Mean     -> Avg: {torch.mean(target_sequence).item():.6f}, Min: {torch.min(target_sequence).item():.6f}, Max: {torch.max(target_sequence).item():.6f}")
                 
                 print("--- Gradient Stats ---")
                 total_grad_norm = 0.0
@@ -1605,16 +1625,18 @@ def train_bkn_with_empirical_averaging(
                     for x_true_val, y_meas_val in val_loader:
                         x_true_val, y_meas_val = x_true_val.to(device), y_meas_val.to(device)
                         val_batch_size, val_seq_len, _ = x_true_val.shape
-                        x_hat_val_batch = torch.zeros_like(x_true_val)
                         
-                        for i_val in range(val_batch_size):
-                            initial_state_val = x_true_val[i_val, 0, :].unsqueeze(-1)
-                            y_sequence_val_sliced = y_meas_val[i_val, 1:, :]
-                            
-                            state_history_val, _ = model(y_sequence_val_sliced, initial_state_val)
-                            x_hat_val_batch[i_val, :, :] = state_history_val.T
+                        val_predicted_means = []
+                        initial_state_val = x_true_val[:, 0, :]
+                        model.reset(batch_size=val_batch_size, num_samples=J_samples, initial_state=initial_state_val)
+
+                        for t_val in range(1, val_seq_len):
+                            y_t_val = y_meas_val[:, t_val, :]
+                            x_filtered_ensemble_val, _ = model.step(y_t_val, num_samples=J_samples)
+                            val_predicted_means.append(x_filtered_ensemble_val.mean(dim=0))
                         
-                        avg_val_loss += F.mse_loss(x_hat_val_batch[:, 1:, :], x_true_val[:, 1:, :]).item()
+                        val_predicted_means_tensor = torch.stack(val_predicted_means, dim=1)
+                        avg_val_loss += F.mse_loss(val_predicted_means_tensor, x_true_val[:, 1:, :]).item()
 
                 avg_val_loss /= len(val_loader)
                 print(f"  Validation Loss (MSE): {avg_val_loss:.6f}")
@@ -1624,7 +1646,7 @@ def train_bkn_with_empirical_averaging(
                     best_val_loss = avg_val_loss
                     best_model_state = deepcopy(model.state_dict())
                 
-                print("-" * (len(f"--- Iterace [{train_iter_count}/{total_train_iter}] ---") + 2))
+                print("-" * 50)
                 model.train()
     
     print("\nTrénování dokončeno.")
