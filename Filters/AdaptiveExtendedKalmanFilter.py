@@ -72,6 +72,9 @@ class AdaptiveExtendedKalmanFilter:
         I = torch.eye(self.state_dim, device=self.device)
         P_filtered = (I - K @ H_t) @ P_predict @ (I - K @ H_t).T + K @ self.R_prev @ K.T
         
+        p_floor = 1e-6
+        P_filtered = P_filtered + torch.eye(self.state_dim, device=self.device) * p_floor
+
         return x_filtered, P_filtered, K, innovation
     
     def measurement_covariance_update(self, y_t,x_filtered, P_filtered):
