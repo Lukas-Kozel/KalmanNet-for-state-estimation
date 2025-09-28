@@ -9,7 +9,80 @@ from NN_models.KalmanNet_withCovMatrix import KalmanNet_withCovMatrix
 
 from state_NN_models.StateKalmanNetWithKnownR import StateKalmanNetWithKnownR
 
+# =================================================================================
+# 1. POMOCNÉ FUNKCE
+# =================================================================================
 
+def generate_data(system, num_trajectories, seq_len):
+    """Generuje data (trajektorie) pro daný dynamický systém."""
+    device = system.Ex0.device
+    x_data = torch.zeros(num_trajectories, seq_len, system.state_dim, device=device)
+    y_data = torch.zeros(num_trajectories, seq_len, system.obs_dim, device=device)
+
+    for i in range(num_trajectories):
+        # x = system.get_initial_state() # Vrací 1D tenzor, např. shape [1]
+        x = system.get_deterministic_initial_state()
+        for t in range(seq_len):
+            if t > 0:
+                # `step` nyní očekává dávku, takže x předáme jako dávku o velikosti 1
+                x = system.step(x.unsqueeze(0)).squeeze(0)
+
+            # `measure` také očekává dávku
+            y = system.measure(x.unsqueeze(0)).squeeze(0)
+
+            x_data[i, t, :] = x
+            y_data[i, t, :] = y
+
+    return x_data, y_data
+
+def store_model(model, path):
+    """Uloží stav modelu do souboru."""
+    torch.save(model.state_dict(), path)
+    print(f"Model byl uložen do {path}")
+
+
+def calculate_anees_vectorized(x_true_tensor, x_hat_tensor, P_hat_tensor):
+    """
+    Vektorizovaná verze pro výpočet ANEES.
+    Přijímá jeden velký tenzor pro každou sadu dat.
+    Tvar vstupů: [Počet_Trajektorií, Délka_Sekvence, Dimenze]
+    """
+    # Kontrola, zda máme vůbec nějaká data
+    if x_true_tensor.numel() == 0:
+        return float('nan')
+        
+    # Kontrola, zda sedí tvary (počet trajektorií a délka sekvence)
+    if x_true_tensor.shape[:2] != x_hat_tensor.shape[:2] or x_true_tensor.shape[:2] != P_hat_tensor.shape[:2]:
+        print("!!! CHYBA: Tenzory pro ANEES nemají stejný počet trajektorií nebo délek sekvencí!")
+        return float('nan')
+
+    device = x_true_tensor.device
+    jitter = torch.eye(P_hat_tensor.shape[-1], device=device) * 1e-6
+    
+    # Počítáme chybu od t=1
+    # Tvar všech tenzorů bude [Num_Traj, Seq_Len - 1, ...]
+    error = x_true_tensor[:, 1:, :] - x_hat_tensor[:, 1:, :]
+    P_hat_seq = P_hat_tensor[:, 1:, :, :]
+    
+    try:
+        # Inverze kovariančních matic pro všechny trajektorie a časové kroky najednou
+        P_inv_seq = torch.linalg.inv(P_hat_seq + jitter) # Tvar [N, T-1, D, D]
+        
+        # Vektorizovaný výpočet NEES
+        # error.unsqueeze(-2) -> [N, T-1, 1, D]
+        # P_inv_seq @ error.unsqueeze(-1) -> [N, T-1, D, 1]
+        # ... @ ... -> [N, T-1, 1, 1]
+        nees_tensor = (error.unsqueeze(-2) @ P_inv_seq @ error.unsqueeze(-1)).squeeze() # Tvar [N, T-1]
+        
+        # Zprůměrujeme přes všechny trajektorie a všechny časové kroky
+        avg_anees = torch.mean(nees_tensor).item()
+        
+        return avg_anees
+        
+    except torch.linalg.LinAlgError:
+        print("!!! VAROVÁNÍ: Selhala inverze matice při výpočtu ANEES. !!!")
+        return float('nan')
+    
 # Funkce pro generování dat
 def generate_data(system, num_trajectories, seq_len):
 
@@ -33,42 +106,48 @@ def generate_data(system, num_trajectories, seq_len):
 def store_model(model, path):
     torch.save(model.state_dict(), path)
     print(f"Model byl uložen do {path}")
-
 def calculate_anees(x_true_list, x_hat_list, P_hat_list):
     """
     Vypočítá Average NEES (ANEES) ze seznamů trajektorií.
+    Očekává, že všechny vstupní tenzory jsou na CPU.
     """
     num_runs = len(x_true_list)
     if num_runs == 0:
         return 0.0
-        
+    
     total_nees = 0.0
     for i in range(num_runs):
         x_true = x_true_list[i]
         x_hat = x_hat_list[i]
         P_hat = P_hat_list[i]
         
-        seq_len = x_true.shape[0]
-        state_dim = x_true.shape[1]
-        nees_samples_run = torch.zeros(seq_len)
-
-        for t in range(seq_len):
-            error = x_true[t] - x_hat[t]
-            P_t = P_hat[t]
+        # NEES se počítá od t=1, protože v t=0 je chyba nulová a P0 je jen odhad
+        seq_len_anees = x_true.shape[0] - 1
+        if seq_len_anees <= 0:
+            continue
             
-            P_t_matrix = P_t.reshape(state_dim, state_dim)
-                
-            P_stable = P_t_matrix + torch.eye(state_dim, device=P_t_matrix.device) * 1e-9
+        state_dim = x_true.shape[1]
+        nees_samples_run = torch.zeros(seq_len_anees)
+
+        for t in range(seq_len_anees):
+            t_idx = t + 1 # Indexujeme od 1
+            error = x_true[t_idx] - x_hat[t_idx]
+            P_t = P_hat[t_idx]
+            
+            P_stable = P_t + torch.eye(state_dim, device=P_t.device) * 1e-9
             
             try:
                 P_inv = torch.inverse(P_stable)
                 nees_samples_run[t] = error.unsqueeze(0) @ P_inv @ error.unsqueeze(-1)
             except torch.linalg.LinAlgError:
+                print(f"Varování: Singularita matice P v trajektorii {i}, kroku {t_idx}. Přeskakuji.")
                 nees_samples_run[t] = float('nan')
             
-        total_nees += torch.nanmean(nees_samples_run).item()
+        if not torch.isnan(nees_samples_run).all():
+            total_nees += torch.nanmean(nees_samples_run).item()
         
-    return total_nees / num_runs
+    return total_nees / num_runs if num_runs > 0 else 0.0
+
 
 # Trénovací funkce
 def train(model, train_loader,device, epochs=50, lr=1e-4, clip_grad=10):
@@ -1480,34 +1559,38 @@ def train_variance_diagnostic(
 #     return model
 
 # Používáme robustnější L2 ztrátu
-def empirical_averaging_detached_sum(target, predicted_mean, predicted_var, beta):
-    l1_loss = F.mse_loss(predicted_mean, target)
-    empirical_variance = torch.square(target - predicted_mean).detach()
-    # Použití průměru absolutních chyb je robustnější než MSE na variancích
-    l2_loss = torch.mean(torch.abs(empirical_variance - predicted_var))
-    total_data_loss = (1 - beta) * l1_loss + beta * l2_loss
-    return total_data_loss, l1_loss, l2_loss
-
-
-def train_bkn_with_empirical_averaging(
-    model, train_loader, val_loader, device, 
-    total_train_iter=2000,
-    lr_phase1=1e-4,
-    lr_phase2=1e-5,
-    clip_grad=10.0,
-    J_samples=20,
-    reg_weight=1.0,
-    validation_period=100,
-    logging_period=25,
-    pretrain_iters=1000,
-    final_beta=0.8  # Zvýšená hodnota pro silnější učení variance
-):
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr_phase1)
     
-    best_val_loss = float('inf')
+def authors_empirical_loss(target, predicted_mean, predicted_var, beta):
+    l1_loss_mean = F.mse_loss(predicted_mean, target)
+    empirical_variance = (target - predicted_mean)**2
+    l2_loss_sum = torch.sum(torch.abs(predicted_var - empirical_variance.detach()))
+    total_data_loss = (1 - beta) * l1_loss_mean + beta * l2_loss_sum
+    with torch.no_grad():
+        l2_loss_mean = torch.mean(torch.abs(predicted_var - (target - predicted_mean)**2))
+    return total_data_loss, l1_loss_mean, l2_loss_sum
+
+# Předpokládáme, že funkce calculate_anees je definována jinde a je dostupná
+# from utils import calculate_anees 
+
+def train_bkn_reference_replication(
+    model, train_loader, val_loader, device, 
+    total_train_iter=1000,
+    learning_rate=1e-4, # Autoři používají jednu konstantní LR
+    clip_grad=10.0,
+    J_samples=30,
+    validation_period=50,
+    logging_period=25,
+    final_beta=0.5 # Maximální hodnota bety
+):
+    """
+    Trénovací funkce, která co nejvěrněji replikuje logiku a strukturu 
+    z referenčního kódu autorů Bayesian KalmanNet.
+    """
+    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+    
+    best_val_anees_error = float('inf')
     best_model_state = None
     train_iter_count = 0
-    phase = 1
     
     done = False
     while not done:
@@ -1518,97 +1601,99 @@ def train_bkn_with_empirical_averaging(
                 done = True
                 break
 
-            if train_iter_count == pretrain_iters and phase == 1:
-                phase = 2
-                print("\n" + "="*50)
-                print(f"KONEC FÁZE 1. PŘEPÍNÁM NA FÁZI 2 (trénink variance).")
-                print(f"Měním learning rate na {lr_phase2}")
-                print("="*50 + "\n")
-                for param_group in optimizer.param_groups:
-                    param_group['lr'] = lr_phase2
-
-            x_true_batch, y_meas_batch = x_true_batch.to(device), y_meas_batch.to(device)
             optimizer.zero_grad()
             
-            # Agresivnější beta plánovač
-            if phase == 1:
-                beta = 0.0
-            else:
-                current_phase_iter = train_iter_count - pretrain_iters
-                ramp_up_period = (total_train_iter - pretrain_iters) * 0.5 # Dosáhne plné bety v polovině fáze 2
-                beta = final_beta * min(1.0, current_phase_iter / ramp_up_period)
+            x_true_batch, y_meas_batch = x_true_batch.to(device), y_meas_batch.to(device)
+            batch_size, seq_len, state_dim = x_true_batch.shape
 
-            batch_size, seq_len, _ = x_true_batch.shape
+            # --- PŘESNÁ REPLIKACE STRUKTURY SMYČEK AUTORŮ ---
             
-            all_predicted_ensembles = []
-            all_regularizations = []
+            # Tenzory pro uložení finálních (zprůměrovaných) výsledků pro dávku
+            x_hat_batch = torch.zeros(batch_size, seq_len - 1, state_dim, device=device)
+            cov_hat_bnn_batch = torch.zeros(batch_size, seq_len - 1, state_dim, device=device)
+            regularization_batch = torch.zeros(batch_size, seq_len - 1, device=device)
 
-            initial_state = x_true_batch[:, 0, :]
-            model.reset(batch_size=batch_size, num_samples=J_samples, initial_state=initial_state)
+            # 1. SMYČKA: Přes každý prvek v dávce
+            for i in range(batch_size):
+                x_true_i = x_true_batch[i] # Tvar [seq_len, state_dim]
+                y_meas_i = y_meas_batch[i] # Tvar [seq_len, obs_dim]
+                
+                # Dočasné tenzory pro MC iterace pro jeden prvek 'i'
+                x_hat_temp = torch.zeros(seq_len - 1, state_dim, J_samples, device=device)
+                reg_temp = torch.zeros(seq_len - 1, J_samples, device=device)
 
-            for t in range(1, seq_len):
-                y_t = y_meas_batch[:, t, :]
-                x_filtered_ensemble, regularization = model.step(y_t, num_samples=J_samples)
-                all_predicted_ensembles.append(x_filtered_ensemble)
-                all_regularizations.append(regularization)
+                # 2. SMYČKA: Přes MC vzorky
+                for j in range(J_samples):
+                    initial_state = x_true_i[0].unsqueeze(0) # Tvar [1, state_dim]
+                    model.reset(batch_size=1, num_samples=1, initial_state=initial_state)
+                    
+                    # 3. SMYČKA: Přes časové kroky
+                    for t in range(1, seq_len):
+                        y_t = y_meas_i[t].unsqueeze(0) # Tvar [1, obs_dim]
+                        x_filtered_j, regularization_j = model.step(y_t, num_samples=1)
+                        x_hat_temp[t - 1, :, j] = x_filtered_j.squeeze(0).squeeze(0)
+                        reg_temp[t - 1, j] = regularization_j.squeeze(0).squeeze(0)
 
-            predicted_ensembles_tensor = torch.stack(all_predicted_ensembles, dim=1).permute(2, 1, 0, 3)
+                # Zprůměrování přes MC vzorky pro prvek 'i'
+                x_hat_batch[i] = x_hat_temp.mean(dim=-1)
+                cov_hat_bnn_batch[i] = x_hat_temp.var(dim=-1)
+                regularization_batch[i] = reg_temp.mean(dim=-1)
 
-            predicted_means = predicted_ensembles_tensor.mean(dim=2)
-            predicted_variances = predicted_ensembles_tensor.var(dim=2, unbiased=True)
+            # --- Výpočet ztráty (nyní plně vektorizovaný přes dávku) ---
 
-            total_regularization_loss = torch.stack(all_regularizations).mean()
+            # Lineární náběh bety, přesně jako u autorů
+            beta = final_beta * (train_iter_count / total_train_iter)
             
             target_sequence = x_true_batch[:, 1:, :]
             
-            data_loss, l1_loss, l2_loss = empirical_averaging_detached_sum(
-                target=target_sequence, 
-                predicted_mean=predicted_means, 
-                predicted_var=predicted_variances,
-                beta=beta
-            )
+            # Loss L1 (MSE)
+            l1_loss = F.mse_loss(x_hat_batch, target_sequence)
             
-            total_loss = data_loss + reg_weight * total_regularization_loss
+            # Loss L2 (chyba variance)
+            empirical_variance = (target_sequence - x_hat_batch)**2
+            l2_loss_sum = torch.sum(torch.abs(cov_hat_bnn_batch - empirical_variance))
 
-            if torch.isnan(total_loss) or torch.isinf(total_loss):
+            # Regularizace
+            reg_sum = torch.sum(regularization_batch)
+            
+            # Celková ztráta
+            loss = (1 - beta) * l1_loss + beta * l2_loss_sum + reg_sum
+            
+            if torch.isnan(loss) or torch.isinf(loss):
                 print(f"!!! Kolaps v iteraci {train_iter_count}, ztráta je NaN/Inf. Ukončuji. !!!")
                 done = True
                 break
-
-            total_loss.backward()
+                
+            loss.backward()
             if clip_grad > 0:
-                nn.utils.clip_grad_norm_(model.parameters(), clip_grad)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), clip_grad)
             optimizer.step()
             train_iter_count += 1
-
+            
             if train_iter_count % logging_period == 0:
-                print(f"\n--- Iterace [{train_iter_count}/{total_train_iter}] | Fáze: {phase} ---")
-                print("--- Loss Stats ---")
-                print(f"  Total Loss:       {total_loss.item():.6f} | Current Beta: {beta:.4f}")
-                print(f"    ├─ L1 (MSE):   {l1_loss.item():.6f} (váha: {1-beta:.2f})")
-                print(f"    ├─ L2 (Var MSE):{l2_loss.item():.6f} (váha: {beta:.4f})")
-                print(f"    └─ Regularize: {total_regularization_loss.item():.6f} (váha: {reg_weight})")
-                
                 with torch.no_grad():
-                    empirical_variances = torch.square(target_sequence - predicted_means)
-                    print("--- Variance Stats ---")
-                    print(f"  Predicted Var -> Avg: {torch.mean(predicted_variances).item():.6f}, Min: {torch.min(predicted_variances).item():.6f}, Max: {torch.max(predicted_variances).item():.6f}")
-                    print(f"  True Var      -> Avg: {torch.mean(empirical_variances).item():.6f}, Min: {torch.min(empirical_variances).item():.6f}, Max: {torch.max(empirical_variances).item():.6f}")
-                    print("--- Mean (State) Stats ---")
-                    print(f"  Predicted Mean-> Avg: {torch.mean(predicted_means).item():.6f}, Min: {torch.min(predicted_means).item():.6f}, Max: {torch.max(predicted_means).item():.6f}")
-                    print(f"  True Mean     -> Avg: {torch.mean(target_sequence).item():.6f}, Min: {torch.min(target_sequence).item():.6f}, Max: {torch.max(target_sequence).item():.6f}")
+                    l2_loss_log = torch.mean(torch.abs(cov_hat_bnn_batch - empirical_variance))
+                    reg_log = regularization_batch.mean()
+                    empirical_variances_log = (target_sequence - x_hat_batch)**2
                 
+                print(f"\n--- Iterace [{train_iter_count}/{total_train_iter}] ---")
+                print("--- Loss Stats (Replikace autorů) ---")
+                print(f"  Total Loss:   {loss.item():.6f} | Current Beta: {beta:.4f}")
+                print(f"    ├─ L1 (MSE):   {l1_loss.item():.6f}")
+                print(f"    ├─ L2 (Var MAE) sum :{l2_loss_log.item():.6f} (váha: beta * SUM)")
+                print(f"    └─ Regularize: {reg_log.item():.6f} (váha: SUM)")
+                
+                print("--- Variance Stats ---")
+                print(f"  Predicted Var -> Avg: {torch.mean(cov_hat_bnn_batch).item():.6f}, Min: {torch.min(cov_hat_bnn_batch).item():.6f}, Max: {torch.max(cov_hat_bnn_batch).item():.6f}")
+                print(f"  True Var      -> Avg: {torch.mean(empirical_variances_log).item():.6f}, Min: {torch.min(empirical_variances_log).item():.6f}, Max: {torch.max(empirical_variances_log).item():.6f}")
+
                 print("--- Gradient Stats ---")
-                total_grad_norm = 0.0
-                for name, param in model.named_parameters():
-                    if param.grad is not None:
-                        grad_norm = param.grad.norm().item()
-                        total_grad_norm += grad_norm**2
-                        if torch.isnan(param.grad).any():
-                           print(f'  Layer: {name:<30} | Grad is NaN!')
-                        else:
-                           print(f'  Layer: {name:<30} | Grad norm: {grad_norm:.6f}')
-                total_grad_norm = total_grad_norm**0.5
+                total_grad_norm = 0
+                for p in model.parameters():
+                    if p.grad is not None:
+                        param_norm = p.grad.detach().data.norm(2)
+                        total_grad_norm += param_norm.item() ** 2
+                total_grad_norm = total_grad_norm ** 0.5
                 print(f"  Total Grad Norm (before clipping): {total_grad_norm:.6f}")
                 
                 print("--- Model Stats ---")
@@ -1620,38 +1705,59 @@ def train_bkn_with_empirical_averaging(
             if train_iter_count > 0 and train_iter_count % validation_period == 0:
                 print("\n--- Spouštím validaci ---")
                 model.eval()
-                avg_val_loss = 0.0
+                val_x_true_list, val_x_hat_list, val_P_hat_list = [], [], []
+
                 with torch.no_grad():
-                    for x_true_val, y_meas_val in val_loader:
-                        x_true_val, y_meas_val = x_true_val.to(device), y_meas_val.to(device)
-                        val_batch_size, val_seq_len, _ = x_true_val.shape
-                        
-                        val_predicted_means = []
-                        initial_state_val = x_true_val[:, 0, :]
-                        model.reset(batch_size=val_batch_size, num_samples=J_samples, initial_state=initial_state_val)
+                    for x_true_val_batch, y_meas_val_batch in val_loader:
+                        val_batch_size, val_seq_len, _ = x_true_val_batch.shape
 
-                        for t_val in range(1, val_seq_len):
-                            y_t_val = y_meas_val[:, t_val, :]
-                            x_filtered_ensemble_val, _ = model.step(y_t_val, num_samples=J_samples)
-                            val_predicted_means.append(x_filtered_ensemble_val.mean(dim=0))
-                        
-                        val_predicted_means_tensor = torch.stack(val_predicted_means, dim=1)
-                        avg_val_loss += F.mse_loss(val_predicted_means_tensor, x_true_val[:, 1:, :]).item()
+                        for i in range(val_batch_size):
+                            x_true_seq = x_true_val_batch[i]
+                            y_meas_seq = y_meas_val_batch[i]
+                            
+                            val_mc_x_hats = torch.zeros(val_seq_len - 1, state_dim, J_samples, device=device)
 
-                avg_val_loss /= len(val_loader)
-                print(f"  Validation Loss (MSE): {avg_val_loss:.6f}")
+                            for j_val in range(J_samples):
+                                initial_state_val = x_true_seq[0].unsqueeze(0)
+                                model.reset(batch_size=1, num_samples=1, initial_state=initial_state_val)
+                                for t_val in range(1, val_seq_len):
+                                    y_t_val = y_meas_seq[t_val].unsqueeze(0)
+                                    x_ensemble_val, _ = model.step(y_t_val, num_samples=1)
+                                    val_mc_x_hats[t_val - 1, :, j_val] = x_ensemble_val.squeeze(0).squeeze(0)
+
+                            val_predictions = val_mc_x_hats.mean(dim=-1)
+                            
+                            diff_val = val_mc_x_hats.permute(0, 2, 1) - val_predictions.unsqueeze(1)
+                            outer_products = diff_val.unsqueeze(-1) @ diff_val.unsqueeze(-2)
+                            val_covariances = outer_products.mean(dim=1)
+
+                            full_x_hat = torch.cat([x_true_seq[0].unsqueeze(0), val_predictions], dim=0)
+                            
+                            P0_val = model.system_model.P0
+                            full_P_hat = torch.cat([P0_val.unsqueeze(0), val_covariances], dim=0)
+                            
+                            val_x_true_list.append(x_true_seq.cpu())
+                            val_x_hat_list.append(full_x_hat.cpu())
+                            val_P_hat_list.append(full_P_hat.cpu())
                 
-                if avg_val_loss < best_val_loss:
-                    print(f"  Nová nejlepší validační ztráta! Ukládám model.")
-                    best_val_loss = avg_val_loss
+                expected_anees = state_dim
+                # Tuto funkci si budeš muset dodat sám, pokud ji máš
+                avg_val_anees = calculate_anees(val_x_true_list, val_x_hat_list, val_P_hat_list)
+                anees_error = abs(avg_val_anees - expected_anees)
+                
+                print(f"  Validation ANEES: {avg_val_anees:.4f} (Chyba od ideálu {expected_anees:.2f}: {anees_error:.4f})")
+                
+                if anees_error < best_val_anees_error:
+                    print(f"  Nové nejlepší validační ANEES! Ukládám model.")
+                    best_val_anees_error = anees_error
                     best_model_state = deepcopy(model.state_dict())
                 
                 print("-" * 50)
                 model.train()
-    
+
     print("\nTrénování dokončeno.")
     if best_model_state:
-        print(f"Načítám nejlepší model s validační chybou: {best_val_loss:.6f}")
+        print(f"Načítám nejlepší model s chybou ANEES: {best_val_anees_error:.6f}")
         model.load_state_dict(best_model_state)
     else:
         print("Žádný nejlepší model nebyl uložen, vracím poslední stav.")
