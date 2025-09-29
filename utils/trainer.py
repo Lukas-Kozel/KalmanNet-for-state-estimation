@@ -387,7 +387,6 @@ def training_session_single_step_with_empirical_loss_sum(
                         val_target_seq = x_true_val_batch[:, 1:, :]
                         
                         val_data_loss, _, _ =  empirical_loss_sum(val_target_seq, val_preds_seq, val_covs_diag_seq, beta)
-                        # Regularizaci zde pro jednoduchost nepočítáme, zajímá nás hlavně MSE a ANEES
                         val_loss_list.append(val_data_loss.item())
                         val_mse_list.append(F.mse_loss(val_preds_seq, val_target_seq).item())
 
@@ -459,7 +458,7 @@ def training_session_trajectory_with_gaussian_nll_training_fcn(
         for x_true_batch, y_meas_batch in train_loader:
             if train_iter_count >= total_train_iter: done = True; break
             
-            # --- Tréninkový krok (tento je již správně) ---
+            # --- Trénink---
             optimizer.zero_grad()
             batch_size, seq_len, _ = x_true_batch.shape
             
@@ -498,14 +497,13 @@ def training_session_trajectory_with_gaussian_nll_training_fcn(
             optimizer.step()
             train_iter_count += 1
             
-            # --- Logování (beze změny) ---
             if train_iter_count % logging_period == 0:
                 with torch.no_grad():
                     p1 = torch.sigmoid(model.dnn.concrete_dropout1.p_logit).item()
                     p2 = torch.sigmoid(model.dnn.concrete_dropout2.p_logit).item()
                 print(f"--- Iteration [{train_iter_count}/{total_train_iter}] ---", f"Total Loss: {loss.item():.4f}", f"NLL: {nll_loss.item():.4f}", f"Reg: {regularization_loss.item():.4f}", f"p1={p1:.3f}, p2={p2:.3f}", sep="\n    - ")
 
-            # --- Validační krok (beze změny) ---
+            # --- Validační krok ---
             if train_iter_count > 0 and train_iter_count % validation_period == 0:
                 print(f"\n--- Validace v iteraci {train_iter_count} ---")
                 model.eval()
@@ -516,38 +514,31 @@ def training_session_trajectory_with_gaussian_nll_training_fcn(
                     for x_true_val_batch, y_meas_val_batch in val_loader:
                         val_batch_size, val_seq_len, _ = x_true_val_batch.shape
                         
-                        # Zde implementujeme stejnou "trajectory-wise" logiku jako v tréninku
                         val_ensemble_trajectories = []
                         for j in range(J_samples):
                             model.reset(batch_size=val_batch_size, initial_state=x_true_val_batch[:, 0, :])
                             val_current_x_hats = []
                             for t in range(1, val_seq_len):
                                 y_t_val = y_meas_val_batch[:, t, :]
-                                x_filtered_t, _ = model.step(y_t_val) # Ignorujeme regularizaci
+                                x_filtered_t, _ = model.step(y_t_val)
                                 val_current_x_hats.append(x_filtered_t)
                             val_ensemble_trajectories.append(torch.stack(val_current_x_hats, dim=1))
                         
-                        # Agregace výsledků z J trajektorií pro validační dávku
                         # Tvar: [J, B_val, T_val-1, D_state]
                         val_ensemble = torch.stack(val_ensemble_trajectories, dim=0)
                         
                         # Průměr přes J dává finální odhad trajektorie
                         val_preds_seq = val_ensemble.mean(dim=0)
                         
-                        # Výpočet MSE
                         val_target_seq = x_true_val_batch[:, 1:, :]
                         val_mse_list.append(F.mse_loss(val_preds_seq, val_target_seq).item())
                         
-                        # Sestavení plných trajektorií pro ANEES
                         initial_state_val = x_true_val_batch[:, 0, :].unsqueeze(1)
                         full_x_hat = torch.cat([initial_state_val, val_preds_seq], dim=1)
                         
-                        # Výpočet plné kovarianční matice z ensemblu
-                        # Rozdíl každého vzorku od průměru
                         diff = val_ensemble - val_preds_seq.unsqueeze(0)
-                        # Vnější součin a průměr přes J vzorků
                         outer_prods = diff.unsqueeze(-1) @ diff.unsqueeze(-2)
-                        val_covs_full = outer_prods.mean(dim=0) # Průměrujeme přes J (dimenze 0)
+                        val_covs_full = outer_prods.mean(dim=0) # Průměr přes J (dimenze 0)
 
                         P0 = model.system_model.P0.unsqueeze(0).repeat(val_batch_size, 1, 1).unsqueeze(1)
                         full_P_hat = torch.cat([P0, val_covs_full], dim=1)
@@ -556,7 +547,6 @@ def training_session_trajectory_with_gaussian_nll_training_fcn(
                         all_val_x_hat_cpu.append(full_x_hat.cpu())
                         all_val_P_hat_cpu.append(full_P_hat.cpu())
 
-                # Zbytek výpočtu metrik je stejný
                 avg_val_mse = np.mean(val_mse_list)
                 final_x_true_list = torch.cat(all_val_x_true_cpu, dim=0)
                 final_x_hat_list = torch.cat(all_val_x_hat_cpu, dim=0)
@@ -604,17 +594,11 @@ def train_state_KalmanNet(model, train_loader, val_loader, device,
     epochs_no_improve = 0
     best_model_state = None
 
-    # --- Automatická detekce výstupu modelu ---
-    # Provedeme jeden zkušební krok, abychom zjistili, co metoda .step() vrací.
-    # To je mnohem robustnější než spoléhat na název třídy.
     model.eval()
     with torch.no_grad():
-        # Vezmeme si jeden vzorek dat
         _, y_sample_batch = next(iter(train_loader))
-        # Vezmeme první časový krok z první trajektorie v dávce
         y_sample = y_sample_batch[0, 1, :].unsqueeze(0).to(device)
         
-        # Zjistíme, zda je výstup tuple (x, P) nebo jen tenzor (x)
         test_output = model.step(y_sample)
         returns_covariance = isinstance(test_output, tuple)
     
@@ -642,8 +626,6 @@ def train_state_KalmanNet(model, train_loader, val_loader, device,
                 y_t = y_meas_batch[:, t, :]
                 step_output = model.step(y_t)
                 
-                # --- KLÍČOVÁ OPRAVA ZDE ---
-                # Správně zpracujeme výstup podle toho, co model vrací
                 if returns_covariance:
                     x_filtered_t, P_filtered_t = step_output
                     predictions_P.append(P_filtered_t)
@@ -656,7 +638,6 @@ def train_state_KalmanNet(model, train_loader, val_loader, device,
 
             if returns_covariance and predictions_P:
                 predicted_cov_trajectory = torch.stack(predictions_P, dim=1)
-                # Použijeme .detach(), abychom neovlivnili graf pro zpětnou propagaci
                 avg_trace_batch = torch.mean(torch.sum(torch.diagonal(predicted_cov_trajectory.detach(), offset=0, dim1=-2, dim2=-1), dim=-1)).item()
                 epoch_traces.append(avg_trace_batch)
 
@@ -671,7 +652,7 @@ def train_state_KalmanNet(model, train_loader, val_loader, device,
         avg_train_loss = train_loss / len(train_loader)
         avg_epoch_trace = np.mean(epoch_traces) if epoch_traces else 0.0
 
-        # --- Validační fáze (stejná oprava) ---
+        # --- Validační fáze ---
         model.eval()
         epoch_val_loss = 0.0
         with torch.no_grad():
@@ -685,7 +666,6 @@ def train_state_KalmanNet(model, train_loader, val_loader, device,
                     y_t_val = y_meas_val[:, t, :]
                     step_output_val = model.step(y_t_val)
                     
-                    # --- KLÍČOVÁ OPRAVA ZDE ---
                     if returns_covariance:
                         x_filtered_t_val = step_output_val[0]
                     else:   
