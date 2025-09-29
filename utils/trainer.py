@@ -657,7 +657,7 @@ def train_state_KalmanNet(model, train_loader, val_loader, device,
             if returns_covariance and predictions_P:
                 predicted_cov_trajectory = torch.stack(predictions_P, dim=1)
                 # Použijeme .detach(), abychom neovlivnili graf pro zpětnou propagaci
-                avg_trace_batch = torch.mean(torch.vmap(torch.trace)(predicted_cov_trajectory.flatten(0, 1).detach())).item()
+                avg_trace_batch = torch.mean(torch.sum(torch.diagonal(predicted_cov_trajectory.detach(), offset=0, dim1=-2, dim2=-1), dim=-1)).item()
                 epoch_traces.append(avg_trace_batch)
 
             loss = criterion(predicted_trajectory, x_true_batch[:, 1:, :])
