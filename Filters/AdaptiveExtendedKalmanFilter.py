@@ -2,6 +2,13 @@ import torch
 from torch.func import jacrev 
 
 class AdaptiveExtendedKalmanFilter:
+    """
+    Volba parametru alpha velmi závisí na konkrétní aplikaci.
+    Hodnota blízká 1 znamená pomalou adaptaci (více váhy na předchozí odhad),
+    zatímco hodnota blízká 0 znamená rychlou adaptaci (více váhy na aktuální měření).
+    Například pro lineární 2D systém může být vhodná hodnota kolem 0.9,
+    zatímco pro nelineární systémy může být lepší hodnota kolem 0
+    """
     def __init__(self, system_model, Q_init=None, R_init=None, alpha=0.3):
    
         self.device = system_model.Q.device
@@ -35,7 +42,6 @@ class AdaptiveExtendedKalmanFilter:
         Inicializuje nebo resetuje stav filtru.
         """
         if Ex0 is not None:
-            # Interně pracujeme se sloupcovými vektory [D, 1]
             self.x_filtered_prev = Ex0.clone().detach().reshape(self.state_dim, 1)
         if P0 is not None:
             self.P_filtered_prev = P0.clone().detach()
@@ -51,8 +57,6 @@ class AdaptiveExtendedKalmanFilter:
             # jacrev očekává 1D tenzor, proto .squeeze()
             F_t = jacrev(self.f)(x_filtered.squeeze()).reshape(self.state_dim, self.state_dim)
         
-        # --- OPRAVA: Vstup do f() musí být dávka řádkových vektorů [B, D] ---
-        # x_filtered [D, 1] -> .T -> [1, D] -> f() -> [1, D] -> .T -> [D, 1]
         x_predict = self.f(x_filtered.T).T
         
         P_predict = F_t @ P_filtered @ F_t.T + self.Q_prev
@@ -68,8 +72,7 @@ class AdaptiveExtendedKalmanFilter:
             # jacrev očekává 1D tenzor, proto .squeeze()
             H_t = jacrev(self.h)(x_predict.squeeze()).reshape(self.obs_dim, self.state_dim)
 
-        # --- OPRAVA: Vstup do h() musí být dávka řádkových vektorů [B, D] ---
-        # x_predict [D, 1] -> .T -> [1, D] -> h() -> [1, O] -> .T -> [O, 1]
+
         y_predict = self.h(x_predict.T).T
         
         innovation = y_t - y_predict
@@ -88,8 +91,7 @@ class AdaptiveExtendedKalmanFilter:
         return x_filtered, P_filtered, K, innovation
     
     def measurement_covariance_update(self, y_t, x_filtered, P_filtered):
-        # --- OPRAVA: Vstup do h() musí být dávka řádkových vektorů [B, D] ---
-        # x_filtered [D, 1] -> .T -> [1, D] -> h() -> [1, O] -> .T -> [O, 1]
+
         y_predict = self.h(x_filtered.T).T
         
         # y_t [O] -> .reshape -> [O, 1]
