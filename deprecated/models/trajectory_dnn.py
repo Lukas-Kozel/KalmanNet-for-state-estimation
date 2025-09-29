@@ -20,6 +20,7 @@ class trajectory_DNN_BayesianKalmanNet(nn.Module):
             nn.Linear(self.input_dim, H1),
             nn.ReLU()
         )
+        self.input_norm = nn.LayerNorm(self.input_dim)
 
         self.l1_conc = ConcreteDropout(init_max=init_max_dropout,init_min=init_min_dropout)
 
@@ -50,9 +51,9 @@ class trajectory_DNN_BayesianKalmanNet(nn.Module):
         regularization = torch.empty(int(2))
 
         input = torch.cat((state_inno, observation_inno, diff_state, diff_obs), axis=0).reshape(-1)
+        normalized_input = self.input_norm(input)
 
-
-        l1_out, regularization[0] = self.l1_conc(input, self.l1)
+        l1_out, regularization[0] = self.l1_conc(normalized_input, self.l1)
 
 
         GRU_in = torch.zeros(self.seq_len_input, self.batch_size, self.gru_input_dim)
