@@ -94,7 +94,7 @@ class UnscentedKalmanFilter:
         # --- OPRAVA: Správná inicializace a ukládání historie ---
         x_filtered_history = torch.zeros(seq_len, self.state_dim, device=self.device)
         P_filtered_history = torch.zeros(seq_len, self.state_dim, self.state_dim, device=self.device)
-
+        kalman_gain_history = torch.zeros(seq_len, self.state_dim, self.obs_dim, device=self.device)
         # Na začátku (čas t=0) je "filtrovaný" stav roven počátečnímu stavu
         x_filtered_history[0] = x_est.squeeze()
         P_filtered_history[0] = P_est
@@ -107,13 +107,14 @@ class UnscentedKalmanFilter:
             x_predict, P_predict = self.predict_step(x_est, P_est)
 
             # 2. Update
-            x_est, P_est, _, _ = self.update_step(x_predict, P_predict, y_seq[t])
+            x_est, P_est, K, _ = self.update_step(x_predict, P_predict, y_seq[t])
 
             # Uložení výsledků
             x_filtered_history[t] = x_est.squeeze()
             P_filtered_history[t] = P_est
-
+            kalman_gain_history[t] = K
         return {
             'x_filtered': x_filtered_history,
             'P_filtered': P_filtered_history,
+            'K': kalman_gain_history
         }
