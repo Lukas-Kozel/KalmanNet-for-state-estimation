@@ -1,7 +1,7 @@
 import torch
 
 class DynamicSystem:
-    def __init__(self, state_dim, obs_dim, Q, R, Ex0, P0, f=None, h=None, F=None, H=None, device=None):
+    def __init__(self, state_dim, obs_dim, Q, R, Ex0, P0, f=None, h=None, F=None, H=None, device=None, noise_type='gaussian', gmm_params=None):
         if device is None:
             self.device = Q.device
         else:
@@ -26,13 +26,22 @@ class DynamicSystem:
         if not self.is_linear_f and self._f_func is None: raise ValueError("Chybí `f` nebo `F`.")
         if not self.is_linear_h and self._h_func is None: raise ValueError("Chybí `h` nebo `H`.")
 
+        self.noise_type = noise_type
+        if self.noise_type == 'gmm':
+            if gmm_params is None:
+                # Defaultní hodnoty, pokud nejsou zadány
+                self.gmm_params = {'prob_outlier': 0.05, 'outlier_scale': 10}
+                print(f"INFO: Používám defaultní GMM parametry: {self.gmm_params}")
+            else:
+                self.gmm_params = gmm_params
+        
+        # Choleského rozklad pro Gaussovský případ
         try:
             self.L_q = torch.linalg.cholesky(self.Q)
             self.L_r = torch.linalg.cholesky(self.R)
             self.L_p0 = torch.linalg.cholesky(self.P0)
         except torch.linalg.LinAlgError as e:
             print(f"Varování při Choleského rozkladu: {e}")
-            # Nastavíme na None, pokud se rozklad nepodaří
             self.L_q, self.L_r, self.L_p0 = None, None, None
 
     def _prepare_input(self, x_in):
@@ -87,8 +96,7 @@ class DynamicSystem:
         x_prev_batch = self._prepare_input(x_prev_in)
         batch_size = x_prev_batch.shape[0]
         
-        if self.L_q is None: raise RuntimeError("Choleského rozklad Q selhal.")
-        w = self.L_q @ torch.randn(batch_size, self.state_dim, 1, device=self.device)
+        w = self._generate_noise(self.Q, self.L_q, batch_size)
         return self.f(x_prev_batch) + w.squeeze(-1)
 
     def measure(self, x_in):
@@ -96,7 +104,29 @@ class DynamicSystem:
         x_batch = self._prepare_input(x_in)
         batch_size = x_batch.shape[0]
         
-        if self.L_r is None: raise RuntimeError("Choleského rozklad R selhal.")
-        v = self.L_r @ torch.randn(batch_size, self.obs_dim, 1, device=self.device)
+        v = self._generate_noise(self.R, self.L_r, batch_size)
         y_noiseless = self.h(x_batch)
         return y_noiseless + v.squeeze(-1)
+    
+    def _generate_noise(self, cov_matrix, cholesky_factor, num_samples):
+        """Pomocná funkce pro generování šumu podle self.noise_type."""
+        dim = cov_matrix.shape[0]
+        
+        if self.noise_type == 'gaussian':
+            if cholesky_factor is None: raise RuntimeError("Choleského rozklad selhal.")
+            return cholesky_factor @ torch.randn(num_samples, dim, 1, device=self.device)
+        
+        elif self.noise_type == 'gmm':
+            # Předpokládáme diagonální kovarianční matici pro jednoduchost GMM
+            std_normal = torch.sqrt(torch.diag(cov_matrix))
+            std_outlier = std_normal * self.gmm_params['outlier_scale']
+            
+            is_outlier = torch.rand(num_samples, dim, 1, device=self.device) < self.gmm_params['prob_outlier']
+            
+            noise_normal = torch.randn(num_samples, dim, 1, device=self.device) * std_normal.view(1, -1, 1)
+            noise_outlier = torch.randn(num_samples, dim, 1, device=self.device) * std_outlier.view(1, -1, 1)
+            
+            return torch.where(is_outlier, noise_outlier, noise_normal)
+        
+        else:
+            raise ValueError(f"Neznámý typ šumu: '{self.noise_type}'")
