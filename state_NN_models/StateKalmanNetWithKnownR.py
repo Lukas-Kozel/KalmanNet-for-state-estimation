@@ -12,7 +12,7 @@ class StateKalmanNetWithKnownR(nn.Module):
         self.state_dim = system_model.state_dim
         self.obs_dim = system_model.obs_dim
 
-        self.R = torch.diag(system_model.R).to(device)
+        self.R = self.system_model.R.to(device)
         self.P0 = system_model.P0.to(device)
 
         self.dnn = DNN_KalmanNet(system_model, hidden_size_multiplier).to(device)
@@ -39,11 +39,11 @@ class StateKalmanNetWithKnownR(nn.Module):
 
         batch_size = y_t.shape[0]
 
-        x_predicted_list = [self.system_model.f(x.unsqueeze(-1)) for x in self.x_filtered_prev]
-        x_predicted = torch.stack(x_predicted_list).squeeze(-1)
+        # self.x_filtered_prev je již dávka [B, D_state], můžeme ji poslat přímo
+        x_predicted = self.system_model.f(self.x_filtered_prev)
 
-        y_predicted_list = [self.system_model.h(x.unsqueeze(-1)) for x in x_predicted]
-        y_predicted = torch.stack(y_predicted_list).squeeze(-1)
+        # x_predicted je také dávka, můžeme ji poslat přímo
+        y_predicted = self.system_model.h(x_predicted)
 
         innovation = y_t - y_predicted
 

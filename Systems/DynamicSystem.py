@@ -2,80 +2,101 @@ import torch
 
 class DynamicSystem:
     def __init__(self, state_dim, obs_dim, Q, R, Ex0, P0, f=None, h=None, F=None, H=None, device=None):
-        """
-        Sjednocená třída pro lineární i nelineární dynamické systémy.
-        
-        Pro lineární systém zadejte matice F a H.
-        Pro nelineární systém zadejte funkce f a h.
-        """
         if device is None:
             self.device = Q.device
         else:
             self.device = device
+            
+        self.state_dim, self.obs_dim = state_dim, obs_dim
+        self.Q, self.R, self.Ex0, self.P0 = Q.to(self.device), R.to(self.device), Ex0.to(self.device), P0.to(self.device)
 
-        self.state_dim = state_dim
-        self.obs_dim = obs_dim
+        if f is not None and F is not None: raise ValueError("Zadejte buď `f` nebo `F`.")
+        if h is not None and H is not None: raise ValueError("Zadejte buď `h` nebo `H`.")
         
-        self.Q = Q.to(self.device)
-        self.R = R.to(self.device)
-        self.Ex0 = Ex0.to(self.device)
-        self.P0 = P0.to(self.device)
+        # Uložíme si lambda funkce přímo
+        self._f_func = f
+        self._h_func = h
         
-        if f is not None and F is not None:
-            raise ValueError("Zadejte buď funkci `f` nebo matici `F`, ne obojí.")
-        if h is not None and H is not None:
-            raise ValueError("Zadejte buď funkci `h` nebo matici `H`, ne obojí.")
+        self.F = F.to(self.device) if F is not None else None
+        self.H = H.to(self.device) if H is not None else None
+        
+        self.is_linear_f = (self.F is not None)
+        self.is_linear_h = (self.H is not None)
 
-        if F is not None:
-            self.F = F.to(self.device)
-            self.f = lambda x: self.F @ x
-            self.is_linear_f = True
-        else:
-            self.f = f
-            self.is_linear_f = False
-
-        if H is not None:
-            self.H = H.to(self.device)
-            self.h = lambda x: self.H @ x
-            self.is_linear_h = True
-        else:
-            self.h = h
-            self.is_linear_h = False
-
-        if self.f is None or self.h is None:
-            raise ValueError("Musí být zadána buď funkce (f,h) nebo matice (F,H).")
+        if not self.is_linear_f and self._f_func is None: raise ValueError("Chybí `f` nebo `F`.")
+        if not self.is_linear_h and self._h_func is None: raise ValueError("Chybí `h` nebo `H`.")
 
         try:
             self.L_q = torch.linalg.cholesky(self.Q)
-        except torch.linalg.LinAlgError:
-            print("Varování: Matice Q není pozitivně definitní.")
-            
-        try:
             self.L_r = torch.linalg.cholesky(self.R)
-        except torch.linalg.LinAlgError:
-            print("Varování: Matice R není pozitivně definitní.")
-
-        try:
             self.L_p0 = torch.linalg.cholesky(self.P0)
-        except torch.linalg.LinAlgError:
-            print("Varování: Matice P0 není pozitivně definitní.")
+        except torch.linalg.LinAlgError as e:
+            print(f"Varování při Choleského rozkladu: {e}")
+            # Nastavíme na None, pokud se rozklad nepodaří
+            self.L_q, self.L_r, self.L_p0 = None, None, None
+
+    def _prepare_input(self, x_in):
+        """Pomocná funkce pro robustní zpracování vstupu."""
+        # Pokud je vstup skalár (0D), uděláme z něj 1D vektor
+        if x_in.dim() == 0:
+            x_in = x_in.unsqueeze(0)
+        # Pokud je vstup 1D vektor, uděláme z něj dávku o velikosti 1
+        if x_in.dim() == 1:
+            x_in = x_in.unsqueeze(0)
+        return x_in
+
+    def f(self, x_in):
+        # Připravíme vstup, aby byl vždy dávka ([B, D_state])
+        x_batch = self._prepare_input(x_in)
+        batch_size = x_batch.shape[0]
+
+        if self.is_linear_f:
+            # Plně vektorizovaná operace
+            F_batch = self.F.unsqueeze(0).expand(batch_size, -1, -1)
+            # .unsqueeze(-1) převede [B, D] na [B, D, 1] pro maticové násobení
+            return torch.bmm(F_batch, x_batch.unsqueeze(-1)).squeeze(-1)
+        else:
+            # Aplikujeme nelineární funkci přímo na celý dávkový tenzor.
+            # Lambda funkce musí být napsána tak, aby to podporovala (např. torch.sin).
+            return self._f_func(x_batch)
+
+    def h(self, x_in):
+        # Připravíme vstup, aby byl vždy dávka ([B, D_state])
+        x_batch = self._prepare_input(x_in)
+        batch_size = x_batch.shape[0]
+
+        if self.is_linear_h:
+            # Plně vektorizovaná operace
+            H_batch = self.H.unsqueeze(0).expand(batch_size, -1, -1)
+            return torch.bmm(H_batch, x_batch.unsqueeze(-1)).squeeze(-1)
+        else:
+            # Aplikujeme nelineární funkci přímo na celý dávkový tenzor.
+            return self._h_func(x_batch)
 
     def get_initial_state(self):
-        """Generuje náhodný počáteční stav."""
+        if self.L_p0 is None: raise RuntimeError("Choleského rozklad P0 selhal.")
         z = torch.randn(self.state_dim, 1, device=self.device)
-        return self.Ex0 + self.L_p0 @ z
+        # Squeeze() je bezpečnější než squeeze(-1), odstraní všechny dimenze velikosti 1
+        return (self.Ex0 + self.L_p0 @ z).squeeze()
 
     def get_deterministic_initial_state(self):
-        """Vrací deterministickou střední hodnotu počátečního stavu."""
-        return self.Ex0.clone()
+        return self.Ex0.clone().squeeze()
 
-    def step(self, x_prev):
-        """Provede jeden krok dynamiky systému."""
-        w = self.L_q @ torch.randn(self.state_dim, 1, device=self.device)
-        return self.f(x_prev) + w
+    def step(self, x_prev_in):
+        """Provede jeden krok dynamiky. Vstup i výstup jsou 2D: [B, D]."""
+        x_prev_batch = self._prepare_input(x_prev_in)
+        batch_size = x_prev_batch.shape[0]
+        
+        if self.L_q is None: raise RuntimeError("Choleského rozklad Q selhal.")
+        w = self.L_q @ torch.randn(batch_size, self.state_dim, 1, device=self.device)
+        return self.f(x_prev_batch) + w.squeeze(-1)
 
-    def measure(self, x):
-        """Provede měření stavu."""
-        v = self.L_r @ torch.randn(self.obs_dim, 1, device=self.device)
-        y_noiseless = self.h(x).view(self.obs_dim, 1)
-        return y_noiseless + v
+    def measure(self, x_in):
+        """Provede měření stavu. Vstup i výstup jsou 2D: [B, D] a [B, O]."""
+        x_batch = self._prepare_input(x_in)
+        batch_size = x_batch.shape[0]
+        
+        if self.L_r is None: raise RuntimeError("Choleského rozklad R selhal.")
+        v = self.L_r @ torch.randn(batch_size, self.obs_dim, 1, device=self.device)
+        y_noiseless = self.h(x_batch)
+        return y_noiseless + v.squeeze(-1)

@@ -33,11 +33,12 @@ class StateKalmanNet(nn.Module):
 
         batch_size = y_t.shape[0]
 
-        # self.x_filtered_prev je již dávka [B, D_state], můžeme ji poslat přímo
-        x_predicted = self.system_model.f(self.x_filtered_prev)
+        x_predicted_list = [self.system_model.f(x.unsqueeze(-1)) for x in self.x_filtered_prev]
+        x_predicted = torch.stack(x_predicted_list).squeeze(-1)
 
-        # x_predicted je také dávka, můžeme ji poslat přímo
-        y_predicted = self.system_model.h(x_predicted)
+        y_predicted_list = [self.system_model.h(x.unsqueeze(-1)) for x in x_predicted]
+        y_predicted = torch.stack(y_predicted_list).squeeze(-1)
+
         innovation = y_t - y_predicted
 
         norm_innovation = F.normalize(innovation, p=2, dim=1, eps=1e-12)
