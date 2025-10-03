@@ -17,29 +17,42 @@ class UnscentedKalmanFilter:
         self.state_dim = self.Q.shape[0]
         self.obs_dim = self.R.shape[0]
         
-        # --- ZJEDNODUŠENÍ: Odstranění alpha, beta, kappa ---
-        # Počet sigma bodů
         self.n_sigma_points = 2 * self.state_dim + 1
-        # Jednoduché, rovnoměrné váhy pro všechny body
         self.weights = torch.full((self.n_sigma_points,), 1.0 / self.n_sigma_points, device=self.device)
+
+        self.x_filtered_prev = None
+        self.P_filtered_prev = None
+
+        # Interní stav pro online použití: predikce pro aktuální krok
+        self.x_predict_current = None
+        self.P_predict_current = None
+
+        self.reset(system_model.Ex0, system_model.P0)
+
+    def reset(self, Ex0, P0):
+        """
+        Inicializuje nebo resetuje interní stav filtru pro online použití.
+        """
+        self.x_predict_current = Ex0.clone().detach().reshape(self.state_dim, 1)
+        self.P_predict_current = P0.clone().detach()
+
 
     def _get_sigma_points(self, x_mean, P):
         """
         Vypočítá sigma body na základě průměru a kovariance.
         """
-        # --- ZACHOVÁNA ROBUSTNOST: Ochrana proti selhání Choleského rozkladu ---
         try:
             # Přidání malého jitteru pro numerickou stabilitu
-            jitter = torch.eye(self.state_dim, device=self.device) * 1e-6
-            S = torch.linalg.cholesky(P + jitter)
+            jitter = torch.eye(self.state_dim, device=self.device) * 1e-12
+            S = torch.linalg.cholesky(P + jitter, upper=False)
         except torch.linalg.LinAlgError:
             print("Cholesky selhal! Používám vlastní odmocninu matice.")
             eigvals, eigvecs = torch.linalg.eigh(P)
             S = eigvecs @ torch.diag(torch.sqrt(eigvals.clamp(min=0))) @ eigvecs.T
 
-        # --- ZJEDNODUŠENÍ: Jednoduchý scaling faktor ---
-        scale = torch.sqrt(torch.tensor(self.state_dim, device=self.device, dtype=torch.float32))
-        
+        # scale = torch.sqrt(torch.tensor(self.state_dim, device=self.device, dtype=torch.float32))
+        n = self.state_dim
+        scale = torch.sqrt(torch.tensor((n * 2 + 1) / 2.0, device=self.device, dtype=torch.float32))
         # Vytvoření sigma bodů (x_mean musí být sloupcový vektor [state_dim, 1])
         sigma_points = x_mean.repeat(1, self.n_sigma_points)
         sigma_points[:, 1:self.state_dim + 1] += scale * S
@@ -50,7 +63,6 @@ class UnscentedKalmanFilter:
     def predict_step(self, x_filtered, P_filtered):
         sigma_points = self._get_sigma_points(x_filtered, P_filtered)
         
-        # --- OPRAVA: Plně vektorizovaná propagace bodů ---
         propagated_points = self.f(sigma_points.T).T
         
         x_predict = (propagated_points @ self.weights).unsqueeze(1)
@@ -60,9 +72,10 @@ class UnscentedKalmanFilter:
         return x_predict, P_predict
 
     def update_step(self, x_predict, P_predict, y_t):
+        y_t = y_t.reshape(self.obs_dim, 1)
+
         sigma_points = self._get_sigma_points(x_predict, P_predict)
 
-        # --- OPRAVA: Plně vektorizovaná transformace bodů (bez for-smyčky) ---
         measurement_points = self.h(sigma_points.T).T
         
         y_hat = (measurement_points @ self.weights).unsqueeze(1)
@@ -73,13 +86,29 @@ class UnscentedKalmanFilter:
         P_yy = (y_diff * self.weights) @ y_diff.T + self.R
         P_xy = (x_diff * self.weights) @ y_diff.T
         
-        innovation = y_t.reshape(self.obs_dim, 1) - y_hat
+        innovation = y_t - y_hat
         K = P_xy @ torch.linalg.inv(P_yy)
         
         x_filtered = x_predict + K @ innovation
-        P_filtered = P_predict - K @ P_yy @ K.T
+        P_filtered = P_predict - K @ P_xy.T
         
         return x_filtered, P_filtered, K, innovation
+
+
+    def step(self, y_t):
+        """
+        Provede jeden kompletní krok filtrace pro ONLINE použití.
+        Vrací nejlepší odhad pro aktuální čas 't'.
+        """
+        x_filtered, P_filtered, _, _ = self.update_step(self.x_predict_current, self.P_predict_current, y_t)
+
+        x_predict_next, P_predict_next = self.predict_step(x_filtered, P_filtered)
+
+        self.x_predict_current = x_predict_next
+        self.P_predict_current = P_predict_next
+
+        return x_filtered, P_filtered
+    
 
     def process_sequence(self, y_seq, Ex0=None, P0=None):
         """
@@ -91,30 +120,29 @@ class UnscentedKalmanFilter:
 
         seq_len = y_seq.shape[0]
 
-        # --- OPRAVA: Správná inicializace a ukládání historie ---
         x_filtered_history = torch.zeros(seq_len, self.state_dim, device=self.device)
         P_filtered_history = torch.zeros(seq_len, self.state_dim, self.state_dim, device=self.device)
         kalman_gain_history = torch.zeros(seq_len, self.state_dim, self.obs_dim, device=self.device)
-        # Na začátku (čas t=0) je "filtrovaný" stav roven počátečnímu stavu
-        x_filtered_history[0] = x_est.squeeze()
-        P_filtered_history[0] = P_est
+        innovation_history = torch.zeros(seq_len, self.obs_dim, device=self.device)
 
-        # Pro t=1...N-1 provádíme predict a update
-        # Poznámka: v EKF a UKF se typicky predikuje stav v čase 't' z 't-1' a pak se updatuje s měřením 't'
-        # Vaše smyčka v eval skriptu ale počítá odhady pro y[0]...y[N-1], proto je tato implementace správná
-        for t in range(seq_len):
-            # 1. Predict
-            x_predict, P_predict = self.predict_step(x_est, P_est)
+        x_predict_k = Ex0.clone().detach().reshape(self.state_dim, 1)
+        P_predict_k = P0.clone().detach()
+        for k in range(seq_len):
+            x_filtered, P_filtered, K, innovation = self.update_step(x_predict_k, P_predict_k, y_seq[k])
 
-            # 2. Update
-            x_est, P_est, K, _ = self.update_step(x_predict, P_predict, y_seq[t])
+            x_predict_k_plus_1, P_predict_k_plus_1 = self.predict_step(x_filtered, P_filtered)
 
-            # Uložení výsledků
-            x_filtered_history[t] = x_est.squeeze()
-            P_filtered_history[t] = P_est
-            kalman_gain_history[t] = K
+            x_predict_k = x_predict_k_plus_1
+            P_predict_k = P_predict_k_plus_1
+
+            x_filtered_history[k] = x_filtered.squeeze()
+            P_filtered_history[k] = P_filtered
+            kalman_gain_history[k] = K
+            innovation_history[k] = innovation.squeeze()
+
         return {
             'x_filtered': x_filtered_history,
             'P_filtered': P_filtered_history,
-            'K': kalman_gain_history
+            'Kalman_gain': kalman_gain_history,
+            'innovation': innovation_history
         }
