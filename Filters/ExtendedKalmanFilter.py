@@ -27,17 +27,18 @@ class ExtendedKalmanFilter:
         self.x_filtered_prev = None
         self.P_filtered_prev = None
 
+        # Interní stav pro online použití: predikce pro aktuální krok
+        self.x_predict_current = None
+        self.P_predict_current = None
+
         self.reset(system_model.Ex0, system_model.P0)
 
-    def reset(self, Ex0=None, P0=None):
+    def reset(self, Ex0, P0):
         """
-        Inicializuje nebo resetuje stav filtru.
+        Inicializuje nebo resetuje interní stav filtru pro online použití.
         """
-        if Ex0 is not None:
-            # Ujistíme se, že má správný tvar [dim, 1]
-            self.x_filtered_prev = Ex0.clone().detach().reshape(self.state_dim, 1)
-        if P0 is not None:
-            self.P_filtered_prev = P0.clone().detach()
+        self.x_predict_current = Ex0.clone().detach().reshape(self.state_dim, 1)
+        self.P_predict_current = P0.clone().detach()
 
     def predict_step(self, x_filtered, P_filtered):
         if self.is_linear_f:
@@ -45,7 +46,6 @@ class ExtendedKalmanFilter:
         else:
             F_t = jacrev(self.f)(x_filtered.squeeze()).reshape(self.state_dim, self.state_dim)
         
-        # OPRAVA: Transponujeme vstup pro f() a výstup zpět.
         # [State_Dim, 1] -> .T -> [1, State_Dim] -> f() -> [1, State_Dim] -> .T -> [State_Dim, 1]
         x_predict = self.f(x_filtered.T).T
 
@@ -60,7 +60,6 @@ class ExtendedKalmanFilter:
         else:
             H_t = jacrev(self.h)(x_predict.squeeze()).reshape(self.obs_dim, self.state_dim)
 
-        # OPRAVA: Transponujeme vstup pro h() a výstup zpět.
         y_predict = self.h(x_predict.T).T
         innovation = y_t - y_predict
         
@@ -75,17 +74,15 @@ class ExtendedKalmanFilter:
 
     def step(self, y_t):
         """
-        Provede jeden kompletní krok filtrace (predict + update) pro online použití.
+        Provede jeden kompletní krok filtrace pro ONLINE použití.
+        Vrací nejlepší odhad pro aktuální čas 't'.
         """
-        # 1. Predikce z uloženého interního stavu
-        x_predict, P_predict = self.predict_step(self.x_filtered_prev, self.P_filtered_prev)
+        x_filtered, P_filtered, _, _ = self.update_step(self.x_predict_current, y_t, self.P_predict_current)
 
-        # 2. Update s novým měřením
-        x_filtered, P_filtered = self.update_step(x_predict, y_t, P_predict)
+        x_predict_next, P_predict_next = self.predict_step(x_filtered, P_filtered)
 
-        # 3. Aktualizace interního stavu pro další volání
-        self.x_filtered_prev = x_filtered
-        self.P_filtered_prev = P_filtered
+        self.x_predict_current = x_predict_next
+        self.P_predict_current = P_predict_next
 
         return x_filtered, P_filtered
 
@@ -93,38 +90,32 @@ class ExtendedKalmanFilter:
             """
             Zpracuje celou sekvenci měření `y_seq` (offline) a vrátí detailní historii.
             """
-            # Pokud nejsou zadány, použije defaultní hodnoty z `__init__`
-            x_est = Ex0.clone().detach().reshape(self.state_dim, 1) if Ex0 is not None else self.x_filtered_prev.clone()
-            P_est = P0.clone().detach() if P0 is not None else self.P_filtered_prev.clone()
 
             seq_len = y_seq.shape[0]
 
             x_filtered_history = torch.zeros(seq_len, self.state_dim, device=self.device)
             P_filtered_history = torch.zeros(seq_len, self.state_dim, self.state_dim, device=self.device)
-            x_predict_history = torch.zeros(seq_len, self.state_dim, device=self.device)
-            P_predict_history = torch.zeros(seq_len, self.state_dim, self.state_dim, device=self.device)
             kalman_gain_history = torch.zeros(seq_len, self.state_dim, self.obs_dim, device=self.device)
             innovation_history = torch.zeros(seq_len, self.obs_dim, device=self.device)
 
-            for t in range(seq_len):
-                # 1. Predict
-                x_predict, P_predict = self.predict_step(x_est, P_est)
+            x_predict_k = Ex0.clone().detach().reshape(self.state_dim, 1)
+            P_predict_k = P0.clone().detach()
+            for k in range(seq_len):
+                x_filtered, P_filtered, K, innovation = self.update_step(x_predict_k, y_seq[k], P_predict_k)
 
-                # 2. Update
-                x_est, P_est, K, innovation = self.update_step(x_predict, y_seq[t], P_predict)
+                x_predict_k_plus_1, P_predict_k_plus_1 = self.predict_step(x_filtered, P_filtered)
 
-                x_filtered_history[t] = x_est.squeeze()
-                P_filtered_history[t] = P_est
-                x_predict_history[t] = x_predict.squeeze()
-                P_predict_history[t] = P_predict
-                kalman_gain_history[t] = K
-                innovation_history[t] = innovation.squeeze()
+                x_predict_k = x_predict_k_plus_1
+                P_predict_k = P_predict_k_plus_1
+
+                x_filtered_history[k] = x_filtered.squeeze()
+                P_filtered_history[k] = P_filtered
+                kalman_gain_history[k] = K
+                innovation_history[k] = innovation.squeeze()
 
             return {
                 'x_filtered': x_filtered_history,
                 'P_filtered': P_filtered_history,
-                'x_predict': x_predict_history,
-                'P_predict': P_predict_history,
                 'Kalman_gain': kalman_gain_history,
                 'innovation': innovation_history
             }
