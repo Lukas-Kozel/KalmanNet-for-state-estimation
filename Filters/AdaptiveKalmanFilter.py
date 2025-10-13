@@ -114,7 +114,7 @@ class AdaptiveKalmanFilter:
         """
         self.kf = KalmanFilter(model)
         self.device = model.Q.device
-        self.mdm_L = mdm_L
+        self.mdm_L = mdm_L # delka posuvneho okna pro MDM
         self.mdm_version = mdm_version
 
     def _reconstruct_qr_from_alpha2(self, alpha_2, nw, nv):
@@ -151,18 +151,16 @@ class AdaptiveKalmanFilter:
         print("Spouštím MDM odhad Q a R...")
         
         # KROK 1: Konverze PyTorch -> NumPy
-        F_np = self.kf.F.cpu().numpy()
-        H_np = self.kf.H.cpu().numpy()
-        
-        # ZDE JE OPRAVA: Odstraňte .reshape a přidejte .squeeze() pro jistotu
-        z_np = y_seq.cpu().numpy().squeeze()
-        
+        F_np = self.kf.F.cpu().numpy() # převod F na numpy
+        H_np = self.kf.H.cpu().numpy() # převod H na numpy
+        z_np = y_seq.cpu().numpy().squeeze() # převod měření na numpy 
+
         # Ujistíme se, že z_np má správný tvar (N, obs_dim)
         if z_np.ndim == 1:
             z_np = z_np.reshape(-1, 1)
 
         # Pro G, E, D předpokládáme, že jsou součástí modelu
-        G_np = np.zeros((F_np.shape[0], 1))
+        G_np = np.zeros((F_np.shape[0], 1)) 
         E_np = np.eye(F_np.shape[0])
         D_np = np.eye(H_np.shape[0])
         
@@ -177,25 +175,41 @@ class AdaptiveKalmanFilter:
         nz_np = np.array([nv])
 
         # KROK 2: Spuštění MDM algoritmu
-        # Vstupní data z, u musí být 2D pole (N, dim), aby hstack fungoval
+
+        # r je realizace MDM statistky, což ve článku je označeno jako Z^~_k (rovnice 11). Není to jen reziduum jako y-hx, ale 
+        # je to zkonstruovaný vektor tak, aby byl přímou lineární funkcí systémových šumů.
+
+        # AWv je transformační matice ve článku označena jako A_k (rovnice 13). 
+        # Popisuje přesný matematický vztah mezi šumy a statistikou r. Platí r[k] ≈ Awv @ [w[k]; v[k]].
+        # Je to klíč, který nám později umožní z vlastností r odvodit vlastnosti w a v.
         r, Awv = MDM_nullO_LTI(self.mdm_L, F_np, G_np, E_np, nz_np, H_np, D_np, z_np, u_np, self.mdm_version)
         
-        # Zbytek funkce zůstává stejný...
-        r0 = np.array(r).squeeze()
+
+        r0 = np.array(r).squeeze() # převod r na numpy pole
         Np = r0.shape[0]
         nr = r0.shape[1]
         
-        Ksi = Ksi_fun(nr)
+        # Ksi je selektorová matice.
+        # Ksi slouží k tomu, abychom z "natažené" kovarianční matice vybrali jen unikátní prvky (např. ty na a nad diagonálou). 
+        Ksi = Ksi_fun(nr) 
+
+        #  kron2_vec udělá r[i] @ r[i].T a výsledek natáhne do vektoru. Ksi z něj pak vybere unikátní prvky
         r02 = np.array([Ksi @ kron2_vec(r0[i]) for i in range(Np)])
 
+        # sestavení matice A. 
         w2b = [baseMatrix_fun(nw, 1)]
         v2b = [baseMatrix_fun(nv, 1)]
         Upsilon_2 = Upsilon_2_fun(w2b, v2b, self.mdm_L)
-        
+
+        # popisuje jak se neznámé prvky Q a R promítají do druhého momentu statistiky r, rovnice (21) ve článku.
         Awv2u = Ksi @ kron2_mat(Awv) @ Upsilon_2
 
-        alpha_2 = pinv(Awv2u) @ np.mean(r02, axis=0)
+        # řešení sestavené rovnice 
+        # Toto je finální řešení soustavy y = A * x. - řešení MNČ.
+        # výsledný hledaný vektor, který obsahuje odhadnuté prvky matic Q a R, ve článku je to R̂_ε^U,m z rovnice (24).
+        alpha_2 = pinv(Awv2u) @ np.mean(r02, axis=0) 
         
+        # rekonstrukce matic Q a R z vektoru alpha_2
         Q_est_np, R_est_np = self._reconstruct_qr_from_alpha2(alpha_2, nw, nv)
         
         print("MDM odhad dokončen.")
