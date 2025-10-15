@@ -17,6 +17,8 @@ class StateKalmanNetWithKnownR(nn.Module):
 
         self.dnn = DNN_KalmanNet(system_model, hidden_size_multiplier).to(device)
 
+        self.Kalman_gain_history = []
+
         self.reset()
 
 
@@ -30,6 +32,7 @@ class StateKalmanNetWithKnownR(nn.Module):
         
         self.delta_x_prev = torch.zeros_like(self.x_filtered_prev)
         self.h_prev = torch.zeros(1, batch_size, self.dnn.gru.hidden_size, device=self.device)
+        self.Kalman_gain_history = []
         
 
     def step(self,y_t):
@@ -53,6 +56,9 @@ class StateKalmanNetWithKnownR(nn.Module):
 
         K_vec, h_new = self.dnn(nn_input, self.h_prev)
         K = K_vec.reshape(batch_size, self.state_dim, self.obs_dim)
+
+        mean_K_for_step = K.mean(dim=0).detach().cpu()
+        self.Kalman_gain_history.append(mean_K_for_step)
 
         correction = (K @ innovation.unsqueeze(-1)).squeeze(-1)
         x_filtered = x_predicted + correction
@@ -92,3 +98,6 @@ class StateKalmanNetWithKnownR(nn.Module):
         self.h_prev = h_new
 
         return x_filtered, P_filtered
+    
+    def get_kalman_gain_history(self):
+        return torch.stack(self.Kalman_gain_history, dim=0)  # [time, D_state, D_obs]

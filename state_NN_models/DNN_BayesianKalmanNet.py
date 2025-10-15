@@ -52,9 +52,8 @@ class DNN_BayesianKalmanNet(nn.Module):
 
         total_reg = reg1+reg2
         return out_final, h_new, total_reg
-    
-from torch import nn
-import torch
+
+
 
 class ConcreteDropout(nn.Module):
     def __init__(self, weight_regularizer=1e-6, dropout_regularizer=1e-6, init_min=0.5, init_max=0.8,device=None):
