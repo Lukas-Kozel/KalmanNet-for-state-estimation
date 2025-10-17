@@ -6,6 +6,7 @@ from .AdaptiveKalmanFilter import AdaptiveKalmanFilter
 from .ParticleFilterSIR import ParticleFilterSIR
 from .AuxiliaryParticleFilter import AuxiliaryParticleFilter
 from Filters.ParticleFilterMH import ParticleFilterMH
+from .ParticleFilter import ParticleFilter
 
 __all__ = [
     "KalmanFilter",
@@ -16,5 +17,6 @@ __all__ = [
     "ParticleFilter",
     "ParticleFilterSIR",
     "AuxiliaryParticleFilter",
-    "ParticleFilterMH"
+    "ParticleFilterMH",
+    "ParticleFilter"
 ]
