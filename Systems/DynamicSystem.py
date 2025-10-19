@@ -91,13 +91,17 @@ class DynamicSystem:
     def get_deterministic_initial_state(self):
         return self.Ex0.clone().squeeze()
 
-    def step(self, x_prev_in):
+    def step(self, x_prev_in, u_in=None):
         """Provede jeden krok dynamiky. Vstup i výstup jsou 2D: [B, D]."""
         x_prev_batch = self._prepare_input(x_prev_in)
         batch_size = x_prev_batch.shape[0]
-        
-        w = self._generate_noise(self.Q, self.L_q, batch_size)
-        return self.f(x_prev_batch) + w.squeeze(-1)
+        w = self._generate_noise(self.Q, self.L_q, batch_size)    
+        if u_in is None:    
+            return self.f(x_prev_batch) + w.squeeze(-1)
+        else:
+            u_batch = self._prepare_input(u_in)
+            return self.f(x_prev_batch) + u_batch + w.squeeze(-1)
+            
 
     def measure(self, x_in):
         """Provede měření stavu. Vstup i výstup jsou 2D: [B, D] a [B, O]."""
