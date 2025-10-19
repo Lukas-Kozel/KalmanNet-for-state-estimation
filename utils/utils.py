@@ -8,7 +8,7 @@ from copy import deepcopy
 # 1. POMOCNÉ FUNKCE
 # =================================================================================
 
-def generate_data(system, num_trajectories, seq_len):
+def generate_data_deterministic_init_state(system, num_trajectories, seq_len):
     """Generuje data (trajektorie) pro daný dynamický systém."""
     device = system.Ex0.device
     x_data = torch.zeros(num_trajectories, seq_len, system.state_dim, device=device)
@@ -83,9 +83,44 @@ def generate_data(system, num_trajectories, seq_len):
             y_data[i, t, :] = y.squeeze()
     return x_data, y_data
 
+
+def generate_data_with_input(system, num_trajectories, u_sequence):
+
+    # Zjištění zařízení, na kterém systém pracuje
+    device = system.Ex0.device
+    seq_len = u_sequence.shape[1]
+
+    x_data = torch.zeros(num_trajectories, seq_len, system.state_dim,device=device)
+    y_data = torch.zeros(num_trajectories, seq_len, system.obs_dim,device=device)
+    for i in range(num_trajectories):
+        # get_initial_state() vrací tvar [3]
+        x = system.get_initial_state_input() 
+        
+        for t in range(seq_len):
+            
+            # --- KLÍČOVÁ OPRAVA ---
+            # Před každým použitím zajistíme, že 'x' má tvar [1, state_dim].
+            # .view(1, -1) převede [3] na [1, 3] bezpečně a efektivně.
+            # Pokud už x má tvar [1, 3], .view(1, -1) nic nezmění.
+            x_batch = x.view(1, -1)
+            
+            # Nyní všechny metody voláme s konzistentním tvarem x_batch
+            y = system.measure(x_batch)
+            x_data[i, t, :] = x_batch.squeeze() # Ukládáme zploštělý vektor
+            y_data[i, t, :] = y.squeeze()
+            
+            u = u_sequence[:,t]
+            
+            # Metoda step vrátí [1, 3], což uložíme do 'x' pro další iteraci
+            x_next = system.step(x_batch, u)
+            x = x_next.view(1,-1)
+    return x_data, y_data
+
+
 def store_model(model, path):
     torch.save(model.state_dict(), path)
     print(f"Model byl uložen do {path}")
+
 def calculate_anees(x_true_list, x_hat_list, P_hat_list):
     """
     Vypočítá Average NEES (ANEES) ze seznamů trajektorií.
