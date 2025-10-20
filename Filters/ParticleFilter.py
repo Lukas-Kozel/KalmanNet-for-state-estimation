@@ -26,13 +26,16 @@ class ParticleFilter:
         if self.N <= 0:
             raise ValueError("Počet částic (num_particles) musí být kladné celé číslo.")
 
-    def _propagate_vectorized(self, particles, Q_np):
+    def _propagate_vectorized(self, particles, Q_np, u_current_np=None):
         """Vektorizovaná predikce pro celý mrak částic."""
         particles_torch = torch.from_numpy(particles).float().to(self.device)
         predicted_particles_torch = self.f(particles_torch)
         predicted_particles = predicted_particles_torch.cpu().numpy()
         noise = np.random.multivariate_normal(np.zeros(self.state_dim), Q_np, size=self.N)
-        return predicted_particles + noise
+        if u_current_np is None:
+            return predicted_particles + noise
+        else:
+            return predicted_particles + noise + u_current_np
 
     def _compute_likelihood_vectorized(self, particles, z_np, R_np):
         """Vektorizovaný výpočet likelihood pro celý mrak částic."""
@@ -73,11 +76,11 @@ class ParticleFilter:
         mean_torch = torch.from_numpy(mean).float().to(self.device)
         cov_torch = torch.from_numpy(cov).float().to(self.device)
         return mean_torch.reshape(self.state_dim, 1), cov_torch
-    
-    def process_sequence(self, y_seq, Ex0=None, P0=None, Q=None, R=None, resampling_threshold=0.5):
+
+    def process_sequence(self, y_seq, u_sequence=None, Ex0=None, P0=None, Q=None, R=None, resampling_threshold=0.5):
         seq_len = y_seq.shape[0]
         y_seq_np = y_seq.cpu().numpy()
-
+        u_sequence_np = u_sequence.cpu().numpy()
         Q_np = Q.cpu().numpy() if Q is not None else self.Q_np_default
         R_np = R.cpu().numpy() if R is not None else self.R_np_default
         Ex0_np = Ex0.cpu().numpy().flatten() if Ex0 is not None else self.Ex0_np
@@ -100,8 +103,8 @@ class ParticleFilter:
         n_threshold = self.N * resampling_threshold
 
         for k in range(1, seq_len):
-            
-            propagated_particles = self._propagate_vectorized(current_particles, Q_np)
+            u_k_np = u_sequence_np[:, k]
+            propagated_particles = self._propagate_vectorized(current_particles, Q_np, u_current_np=u_k_np)
             
             likelihoods = self._compute_likelihood_vectorized(propagated_particles, y_seq_np[k], R_np)
             new_weights = current_weights * likelihoods
