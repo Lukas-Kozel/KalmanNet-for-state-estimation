@@ -80,7 +80,7 @@ class ParticleFilter:
     def process_sequence(self, y_seq, u_sequence=None, Ex0=None, P0=None, Q=None, R=None, resampling_threshold=0.5):
         seq_len = y_seq.shape[0]
         y_seq_np = y_seq.cpu().numpy()
-        u_sequence_np = u_sequence.cpu().numpy()
+        u_sequence_np = u_sequence.cpu().numpy() if u_sequence is not None else None
         Q_np = Q.cpu().numpy() if Q is not None else self.Q_np_default
         R_np = R.cpu().numpy() if R is not None else self.R_np_default
         Ex0_np = Ex0.cpu().numpy().flatten() if Ex0 is not None else self.Ex0_np
@@ -103,7 +103,7 @@ class ParticleFilter:
         n_threshold = self.N * resampling_threshold
 
         for k in range(1, seq_len):
-            u_k_np = u_sequence_np[:, k]
+            u_k_np = u_sequence_np[:, k] if u_sequence_np is not None else None
             propagated_particles = self._propagate_vectorized(current_particles, Q_np, u_current_np=u_k_np)
             
             likelihoods = self._compute_likelihood_vectorized(propagated_particles, y_seq_np[k], R_np)

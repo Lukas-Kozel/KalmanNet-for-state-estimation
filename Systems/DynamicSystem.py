@@ -86,8 +86,8 @@ class DynamicSystem:
         if self.L_p0 is None: raise RuntimeError("Choleského rozklad P0 selhal.")
         z = torch.randn(self.state_dim, 1, device=self.device)
         # Squeeze() je bezpečnější než squeeze(-1), odstraní všechny dimenze velikosti 1
-        return (self.Ex0 + self.L_p0 @ z).squeeze()
-    
+        return (self.Ex0.unsqueeze(1) + self.L_p0 @ z).squeeze()
+
     def get_initial_state_input(self):
         if self.L_p0 is None: raise RuntimeError("Choleského rozklad P0 selhal.")
         z = torch.randn(self.state_dim, 1, device=self.device)

@@ -143,8 +143,6 @@ class UnscentedKalmanFilter:
         P_est = P0.clone().detach()
 
         seq_len = y_seq.shape[0]
-        print(seq_len)
-        print(u_sequence.shape)
 
         x_filtered_history = torch.zeros(seq_len, self.state_dim, device=self.device)
         P_filtered_history = torch.zeros(seq_len, self.state_dim, self.state_dim, device=self.device)

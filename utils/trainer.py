@@ -587,8 +587,8 @@ def train_state_KalmanNet(model, train_loader, val_loader, device,
     Automaticky detekuje, zda model vrací kovarianci, a přizpůsobí se.
     """
     criterion = nn.MSELoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5, verbose=True)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.2, patience=10, verbose=True)
     
     best_val_loss = float('inf')
     epochs_no_improve = 0
