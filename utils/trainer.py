@@ -1,3 +1,4 @@
+from pyexpat import model
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -587,7 +588,7 @@ def train_state_KalmanNet(model, train_loader, val_loader, device,
     Automaticky detekuje, zda model vrací kovarianci, a přizpůsobí se.
     """
     criterion = nn.MSELoss()
-    optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.2, patience=10, verbose=True)
     
     best_val_loss = float('inf')
@@ -595,14 +596,12 @@ def train_state_KalmanNet(model, train_loader, val_loader, device,
     best_model_state = None
 
     model.eval()
-    with torch.no_grad():
-        _, y_sample_batch = next(iter(train_loader))
-        y_sample = y_sample_batch[0, 1, :].unsqueeze(0).to(device)
+    if not hasattr(model, 'returns_covariance'):
+            raise AttributeError("Chyba: Model nemá definovaný atribut 'returns_covariance'. "
+                                "Prosím, přidejte `self.returns_covariance = True/False` do __init__ vašeho modelu.")
         
-        test_output = model.step(y_sample)
-        returns_covariance = isinstance(test_output, tuple)
-    
-    print(f"INFO: Detekováno, že model vrací kovarianci: {returns_covariance}")
+    returns_covariance = model.returns_covariance
+    print(f"INFO: Detekováno z atributu modelu, že vrací kovarianci: {returns_covariance}")
     
     for epoch in range(epochs):
         # --- Trénovací fáze ---
