@@ -86,13 +86,16 @@ def generate_data(system, num_trajectories, seq_len):
 def generate_data_for_map(system, num_trajectories, seq_len):
     """
     Generuje data pomocí metody zahození (rejection sampling).
-    Pokud vygenerovaná trajektorie kdykoliv opustí oblast mapy
-    (což se projeví jako neplatná hodnota měření), je celá zahozen a
-    generuje se nová, dokud není dosaženo požadovaného počtu platných trajektorií.
+    OPRAVENO: Kontroluje, zda STAV (pozice) neopustil hranice mapy.
+    Pokud ano, trajektorie je zahozen a generuje se nová.
     """
     device = system.Ex0.device
     
-    # Připravíme finální tenzory pro ukládání dat
+    # Získáme hranice mapy ze systémového modelu
+    min_x, max_x = system.min_x, system.max_x
+    min_y, max_y = system.min_y, system.max_y
+    print(f"INFO: Generátor dat používá hranice X:[{min_x:.2f}-{max_x:.2f}], Y:[{min_y:.2f}-{max_y:.2f}]")
+
     x_data = torch.zeros(num_trajectories, seq_len, system.state_dim, device=device)
     y_data = torch.zeros(num_trajectories, seq_len, system.obs_dim, device=device)
 
@@ -105,48 +108,58 @@ def generate_data_for_map(system, num_trajectories, seq_len):
         total_attempts += 1
         trajectory_is_valid = True
         
-        # Dočasné úložiště pro jednu potenciální trajektorii
         temp_x_traj = torch.zeros(seq_len, system.state_dim, device=device)
         temp_y_traj = torch.zeros(seq_len, system.obs_dim, device=device)
         
-        # Začneme s novým náhodným počátečním stavem
+        # Začneme s počátečním stavem UVNITŘ mapy (můžeš použít Ex0 nebo náhodný)
+        # Použijeme get_initial_state, ale pro jistotu ho ořízneme na hranice
         x_current = system.get_initial_state().view(1, -1)
-        
-        # Smyčka pro vygenerování jedné kompletní trajektorie
-        for t in range(seq_len):
-            # Provedeme měření v aktuálním stavu
-            y_current = system.measure(x_current)
-            
-            # ZKONTROLUJEME PLATNOST MĚŘENÍ
-            # Vaše funkce h(x) vrací 1e9 pro body mimo mapu.
-            # Zkontrolujeme, zda se tato hodnota v měření nevyskytuje.
-            if torch.any(torch.abs(y_current) > 1e8):
-                # Pokud ano, trajektorie je neplatná
-                trajectory_is_valid = False
-                # Přerušíme vnitřní smyčku, nemá smysl pokračovat
-                break 
+        x_current[0, 0] = x_current[0, 0].clamp(min_x, max_x)
+        x_current[0, 1] = x_current[0, 1].clamp(min_y, max_y)
 
-            # Pokud je měření v pořádku, uložíme ho do dočasného úložiště
+        for t in range(seq_len):
+            # --- OPRAVENÁ KONTROLA ---
+            # Zkontrolujeme, zda AKTUÁLNÍ STAV je stále uvnitř mapy
+            px_curr, py_curr = x_current[0, 0].item(), x_current[0, 1].item()
+            if not (min_x <= px_curr <= max_x and min_y <= py_curr <= max_y):
+                trajectory_is_valid = False
+                # print(f"    Pokus {total_attempts}, krok {t}: Trajektorie opustila mapu [{px_curr:.2f}, {py_curr:.2f}]") # Pro debug
+                break # Trajektorie je neplatná, přerušíme a zahodíme
+            # --- KONEC OPRAVY ---
+
+            # Pokud je stav v mapě, provedeme měření a krok
+            try:
+                y_current = system.measure(x_current)
+            except Exception as e:
+                print(f"Chyba při system.measure v kroku {t} pro x_current={x_current}: {e}")
+                trajectory_is_valid = False
+                break
+                
+            # Uložíme platný stav a měření
             temp_x_traj[t, :] = x_current.squeeze()
             temp_y_traj[t, :] = y_current.squeeze()
             
-            # Vypočítáme další stav pro příští iteraci
-            x_current = system.step(x_current)
-            
-        # Po skončení vnitřní smyčky zkontrolujeme, zda byla celá trajektorie platná
+            # Vypočítáme další stav
+            try:
+                x_current = system.step(x_current)
+            except Exception as e:
+                print(f"Chyba při system.step v kroku {t} pro x_current={x_current}: {e}")
+                trajectory_is_valid = False
+                break
+
+        # Uložíme trajektorii, POUZE pokud byla celá platná
         if trajectory_is_valid:
-            # Pokud ano, uložíme ji do finálních datových sad
             x_data[generated_count, :, :] = temp_x_traj
             y_data[generated_count, :, :] = temp_y_traj
-            
-            # Inkrementujeme počítadlo úspěšně vygenerovaných trajektorií
             generated_count += 1
-            print(f"  Úspěšně vygenerována trajektorie {generated_count}/{num_trajectories}.")
+            if generated_count % (num_trajectories // 10 if num_trajectories >= 10 else 1) == 0:
+                 print(f"  Úspěšně vygenerována trajektorie {generated_count}/{num_trajectories} (Pokusů: {total_attempts})")
 
     print("-" * 30)
     print("Generování dat dokončeno.")
     print(f"Celkový počet pokusů: {total_attempts}")
-    print(f"Úspěšnost: { (num_trajectories / total_attempts) * 100 :.2f}%")
+    if total_attempts > 0:
+      print(f"Úspěšnost (platné trajektorie / pokusy): { (num_trajectories / total_attempts) * 100 :.2f}%")
     print(f"Celkový počet vygenerovaných trajektorií: {x_data.shape}")
     
     return x_data, y_data

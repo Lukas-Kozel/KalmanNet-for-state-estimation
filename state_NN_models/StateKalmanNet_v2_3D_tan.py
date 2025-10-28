@@ -1,18 +1,18 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from .DNN_KalmanNet_v2 import DNN_KalmanNet_v2 
+from .DNN_KalmanNet_v2_3D_tan import DNN_KalmanNet_v2_3D_tan 
 
-class StateKalmanNet_v2(nn.Module):
+class StateKalmanNet_v2_3D_tan(nn.Module):
     def __init__(self, system_model, device, hidden_size_multiplier=10, output_layer_multiplier=4, num_gru_layers=1):
-        super(StateKalmanNet_v2, self).__init__()
+        super(StateKalmanNet_v2_3D_tan, self).__init__()
         self.returns_covariance = False 
         self.device = device
         self.system_model = system_model
         self.state_dim = system_model.state_dim
         self.obs_dim = system_model.obs_dim
 
-        self.dnn = DNN_KalmanNet_v2(system_model, hidden_size_multiplier=hidden_size_multiplier, output_layer_multiplier=output_layer_multiplier, num_gru_layers=num_gru_layers).to(device) # Odstraněny nepotřebné multiplikátory
+        self.dnn = DNN_KalmanNet_v2_3D_tan(system_model, hidden_size_multiplier=hidden_size_multiplier, output_layer_multiplier=output_layer_multiplier, num_gru_layers=num_gru_layers).to(device) # Odstraněny nepotřebné multiplikátory
 
         self.x_filtered_prev = None
         self.delta_x_prev = None # Toto je F4: x_{t-1|t-1} - x_{t-1|t-2}
@@ -81,7 +81,12 @@ class StateKalmanNet_v2(nn.Module):
         # --- KOREKCE ---
         K = K_vec.reshape(batch_size, self.state_dim, self.obs_dim)
         correction = (K @ innovation.unsqueeze(-1)).squeeze(-1)
-        x_filtered = x_predicted + correction
+        x_filtered_unclamped = x_predicted + correction
+
+        # --- OMEZENÍ STAVU (CLAMPING) ---
+        px_clamped = x_filtered_unclamped[:, 0].clamp(self.system_model.min_x, self.system_model.max_x)
+        py_clamped = x_filtered_unclamped[:, 1].clamp(self.system_model.min_y, self.system_model.max_y)
+        x_filtered = torch.stack([px_clamped, py_clamped, x_filtered_unclamped[:,2]], dim=1)
 
         # --- AKTUALIZACE STAVŮ PRO PŘÍŠTÍ KROK ---
         self.delta_x_prev = x_filtered - x_predicted 

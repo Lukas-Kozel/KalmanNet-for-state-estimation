@@ -6,7 +6,7 @@ from .DNN_KalmanNet import DNN_KalmanNet
 class StateKalmanNetWithKnownR(nn.Module):
     def __init__(self,system_model, device, hidden_size_multiplier=10):
         super(StateKalmanNetWithKnownR, self).__init__()
-
+        self.returns_covariance = True
         self.device = device
         self.system_model = system_model
         self.state_dim = system_model.state_dim
@@ -19,7 +19,7 @@ class StateKalmanNetWithKnownR(nn.Module):
 
         self.Kalman_gain_history = []
 
-        self.reset()
+        # self.reset()
 
 
 

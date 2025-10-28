@@ -1,11 +1,11 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from .DNN_KalmanNet_v2 import DNN_KalmanNet_v2 
+from .DNN_KalmanNet_v2 import DNN_KalmanNet_v2
 
-class StateKalmanNet_v2(nn.Module):
+class StateKalmanNet_v2_4D_tan(nn.Module):
     def __init__(self, system_model, device, hidden_size_multiplier=10, output_layer_multiplier=4, num_gru_layers=1):
-        super(StateKalmanNet_v2, self).__init__()
+        super(StateKalmanNet_v2_4D_tan, self).__init__()
         self.returns_covariance = False 
         self.device = device
         self.system_model = system_model
@@ -57,18 +57,18 @@ class StateKalmanNet_v2(nn.Module):
         # 1. Nový Feature (F3*): Rozdíl predikcí x_{t|t-1} - x_{t-1|t-2}
         pred_diff = x_predicted - self.x_pred_prev 
         norm_pred_diff = F.normalize(pred_diff, p=2, dim=1, eps=1e-12)
-
+        norm_pred_diff = pred_diff
         # 2. Inovace (F2): y_t - y_{t|t-1}
         innovation = y_t - y_predicted
         norm_innovation = F.normalize(innovation, p=2, dim=1, eps=1e-12)
-
+        norm_innovation = innovation
         # 3. Rozdíl stavu (F4): x_{t-1|t-1} - x_{t-1|t-2}
         norm_delta_x = F.normalize(self.delta_x_prev, p=2, dim=1, eps=1e-12)
-
+        norm_delta_x = self.delta_x_prev
         # 4. Rozdíl pozorování (F1): y_t - y_{t-1}
         obs_diff = y_t - self.y_prev
         norm_obs_diff = F.normalize(obs_diff, p=2, dim=1, eps=1e-12)
-
+        norm_obs_diff = obs_diff
         # --- VOLÁNÍ DNN se SPRÁVNÝMI vstupy ---
         K_vec, h_new = self.dnn(
             norm_pred_diff,    # Nahrazeno místo norm_state_inno
@@ -81,7 +81,15 @@ class StateKalmanNet_v2(nn.Module):
         # --- KOREKCE ---
         K = K_vec.reshape(batch_size, self.state_dim, self.obs_dim)
         correction = (K @ innovation.unsqueeze(-1)).squeeze(-1)
-        x_filtered = x_predicted + correction
+        x_filtered_unclamped = x_predicted + correction
+
+        # --- OMEZENÍ STAVU (CLAMPING) ---
+        px_clamped = x_filtered_unclamped[:, 0].clamp(self.system_model.min_x, self.system_model.max_x)
+        py_clamped = x_filtered_unclamped[:, 1].clamp(self.system_model.min_y, self.system_model.max_y)
+        max_vel = 120.0 
+        vx_clamped = x_filtered_unclamped[:, 2].clamp(-max_vel, max_vel)
+        vy_clamped = x_filtered_unclamped[:, 3].clamp(-max_vel, max_vel)
+        x_filtered = torch.stack([px_clamped, py_clamped, vx_clamped, vy_clamped], dim=1)
 
         # --- AKTUALIZACE STAVŮ PRO PŘÍŠTÍ KROK ---
         self.delta_x_prev = x_filtered - x_predicted 

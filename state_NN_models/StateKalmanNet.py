@@ -6,7 +6,7 @@ from .DNN_KalmanNet import DNN_KalmanNet
 class StateKalmanNet(nn.Module):
     def __init__(self,system_model, device, hidden_size_multiplier=10):
         super(StateKalmanNet, self).__init__()
-
+        self.returns_covariance = False
         self.device = device
         self.system_model = system_model
         self.state_dim = system_model.state_dim
@@ -14,7 +14,6 @@ class StateKalmanNet(nn.Module):
 
         self.dnn = DNN_KalmanNet(system_model, hidden_size_multiplier).to(device)
 
-        self.reset()
 
     def reset(self,batch_size=1, initial_state=None):
         """
@@ -94,9 +93,32 @@ class StateKalmanNet(nn.Module):
 
         # x_{t|t} = x_{t|t-1} + K_t * (y_t - y_{t|t-1})
         # Finální a posteriori odhad stavu.
-        x_filtered = x_predicted + correction
+        # x_filtered = x_predicted + correction
         # `x_filtered` Tvar: [batch_size, state_dim]
 
+        x_filtered_unclamped = x_predicted + correction
+        # `x_filtered_unclamped` Tvar: [batch_size, state_dim]
+
+        # --- NOVÝ BLOK: OMEZENÍ STAVU (BEZ INPLACE) ---
+        
+        # Ořežeme jednotlivé komponenty. 
+        # .clamp() vrací NOVÝ tenzor, nemění původní.
+        px_clamped = x_filtered_unclamped[:, 0].clamp(self.system_model.min_x, self.system_model.max_x)
+        py_clamped = x_filtered_unclamped[:, 1].clamp(self.system_model.min_y, self.system_model.max_y)
+
+        max_vel = 200.0  
+        vx_clamped = x_filtered_unclamped[:, 2].clamp(-max_vel, max_vel)
+        vy_clamped = x_filtered_unclamped[:, 3].clamp(-max_vel, max_vel)
+        if torch.any((vx_clamped == max_vel) | (vx_clamped == -max_vel)):
+            print(f"Varování: Došlo k omezení rychlosti v ose X (max_vel={max_vel}).")
+        
+        if torch.any((vy_clamped == max_vel) | (vy_clamped == -max_vel)):
+            print(f"Varování: Došlo k omezení rychlosti v ose Y (max_vel={max_vel}).")
+        # --- KONEC KONTROLY ---
+        # Sestavíme z ořezaných komponent *nový* tenzor `x_filtered`.
+        # Toto je teď náš finální, ořezaný stav s platným grafem.
+        x_filtered = torch.stack([px_clamped, py_clamped, vx_clamped, vy_clamped], dim=1)
+        # --- KONEC BLOKU ---
         # --- AKTUALIZACE STAVŮ PRO PŘÍŠTÍ KROK ---
         # Uložíme si hodnoty z aktuálního kroku `t` pro použití v kroku `t+1`.
         

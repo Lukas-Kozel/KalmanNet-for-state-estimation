@@ -1,6 +1,7 @@
 from .DNN_BayesianKalmanNet import DNN_BayesianKalmanNet
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 class StateBayesianKalmanNet(nn.Module):
     def __init__(self, system_model, device, hidden_size_multiplier=10, output_layer_multiplier=4, num_gru_layers=1,init_min_dropout=0.5,init_max_dropout=0.8):
@@ -68,8 +69,23 @@ class StateBayesianKalmanNet(nn.Module):
         
         K = K_vec.reshape(-1, self.state_dim, self.obs_dim)
         correction = torch.bmm(K, inovation.unsqueeze(-1)).squeeze(-1)
-        # x_{t|t} = x_{t|t-1} + K * inovace
-        x_filtered = x_predicted + correction
+        x_filtered_unclamped = x_predicted + correction
+        
+        # --- BLOK PRO OMEZENÍ STAVU (CLAMPING) ---
+        px_clamped = x_filtered_unclamped[:, 0].clamp(self.system_model.min_x, self.system_model.max_x)
+        py_clamped = x_filtered_unclamped[:, 1].clamp(self.system_model.min_y, self.system_model.max_y)
+        max_vel = 100.0 # Nebo jiná rozumná hodnota
+        vx_clamped = x_filtered_unclamped[:, 2].clamp(-max_vel, max_vel)
+        vy_clamped = x_filtered_unclamped[:, 3].clamp(-max_vel, max_vel)
+
+        # Logování (volitelné)
+        # if torch.any((vx_clamped == max_vel) | (vx_clamped == -max_vel)):
+        #     print(f"Varování: Došlo k omezení rychlosti v ose X (max_vel={max_vel}).")
+        # if torch.any((vy_clamped == max_vel) | (vy_clamped == -max_vel)):
+        #     print(f"Varování: Došlo k omezení rychlosti v ose Y (max_vel={max_vel}).")
+
+        # Sestavení nového, ořezaného tenzoru
+        x_filtered = torch.stack([px_clamped, py_clamped, vx_clamped, vy_clamped], dim=1)
         
         # 4. AKTUALIZACE STAVŮ PRO PŘÍŠTÍ VOLÁNÍ (pro t+1)
         # Posuneme stavy v čase
