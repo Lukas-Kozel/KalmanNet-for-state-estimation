@@ -83,10 +83,35 @@ class DynamicSystem:
             return self._h_func(x_batch)
 
     def get_initial_state(self):
-        if self.L_p0 is None: raise RuntimeError("Choleského rozklad P0 selhal.")
-        z = torch.randn(self.state_dim, 1, device=self.device)
-        # Squeeze() je bezpečnější než squeeze(-1), odstraní všechny dimenze velikosti 1
-        return (self.Ex0.unsqueeze(1) + self.L_p0 @ z).squeeze()
+            if self.L_p0 is None: raise RuntimeError("Choleského rozklad P0 selhal.")
+            
+            # Vytvoříme 1D náhodný vektor o délce state_dim
+            z = torch.randn(self.state_dim, device=self.device)
+            
+            # Ujistíme se, že Ex0 je 1D vektor (odebereme přebytečné dimenze)
+            Ex0_flat = self.Ex0.squeeze() # např. z [2, 1] udělá [2]
+            
+            # (L_p0 @ z) provede matice * vektor
+            return Ex0_flat + self.L_p0 @ z
+    
+    # Tuto metodu přidej do třídy DynamicSystem
+    def get_initial_state_batch(self, batch_size):
+        """
+        Vrátí dávku náhodných počátečních stavů.
+        Výstupní tvar: [batch_size, state_dim]
+        """
+        if self.L_p0 is None: 
+            raise RuntimeError("Choleského rozklad P0 selhal.")
+        
+        # Vytvoříme dávku náhodných vektorů [B, D_state]
+        z = torch.randn(batch_size, self.state_dim, device=self.device)
+        
+        # Ujistíme se, že Ex0 je 1D [D_state], a rozšíříme ho na [1, D_state]
+        Ex0_batch = self.Ex0.squeeze().unsqueeze(0)
+        
+        # Aplikujeme Choleského rozklad: (L_p0 @ z.T).T = z @ L_p0.T
+        # Výsledek je [B, D_state] + [B, D_state]
+        return Ex0_batch + z @ self.L_p0.T
 
     def get_initial_state_input(self):
         if self.L_p0 is None: raise RuntimeError("Choleského rozklad P0 selhal.")

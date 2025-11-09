@@ -155,7 +155,7 @@ class UnscentedKalmanFilter:
         for k in range(seq_len):
             x_filtered, P_filtered, K, innovation = self.update_step(x_predict_k, P_predict_k, y_seq[k])
 
-            u_k = u_sequence[:, k] if u_sequence is not None else None
+            u_k = u_sequence[k, :] if u_sequence is not None else None
             x_predict_k_plus_1, P_predict_k_plus_1 = self.predict_step(x_filtered, P_filtered,u_k)
 
             x_predict_k = x_predict_k_plus_1

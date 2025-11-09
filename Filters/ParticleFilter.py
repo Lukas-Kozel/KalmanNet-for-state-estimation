@@ -103,7 +103,7 @@ class ParticleFilter:
         n_threshold = self.N * resampling_threshold
 
         for k in range(1, seq_len):
-            u_k_np = u_sequence_np[:, k] if u_sequence_np is not None else None
+            u_k_np = u_sequence_np[k, :] if u_sequence_np is not None else None
             propagated_particles = self._propagate_vectorized(current_particles, Q_np, u_current_np=u_k_np)
             
             likelihoods = self._compute_likelihood_vectorized(propagated_particles, y_seq_np[k], R_np)
