@@ -86,14 +86,14 @@ class StateKalmanNet_v2(nn.Module):
         # F4: Rozdíl (update)
         fw_update_diff = self.x_filtered_prev - self.x_pred_prev
 
-        # norm_obs_diff = func.normalize(obs_diff, p=2, dim=1, eps=1e-12)
-        # norm_innovation = func.normalize(innovation, p=2, dim=1, eps=1e-12)
-        # norm_fw_evol_diff = func.normalize(fw_evol_diff, p=2, dim=1, eps=1e-12)
-        # norm_fw_update_diff = func.normalize(fw_update_diff, p=2, dim=1, eps=1e-12) 
-        norm_obs_diff = obs_diff
-        norm_innovation = innovation
-        norm_fw_evol_diff = fw_evol_diff
-        norm_fw_update_diff = fw_update_diff
+        norm_obs_diff = func.normalize(obs_diff, p=2, dim=1, eps=1e-12)
+        norm_innovation = func.normalize(innovation, p=2, dim=1, eps=1e-12)
+        norm_fw_evol_diff = func.normalize(fw_evol_diff, p=2, dim=1, eps=1e-12)
+        norm_fw_update_diff = func.normalize(fw_update_diff, p=2, dim=1, eps=1e-12) 
+        # norm_obs_diff = obs_diff
+        # norm_innovation = innovation
+        # norm_fw_evol_diff = fw_evol_diff
+        # norm_fw_update_diff = fw_update_diff
 
         if not torch.all(torch.isfinite(self.h_prev)):
             self._log_and_raise("self.h_prev (vstup GRU)", locals())
