@@ -99,25 +99,10 @@ class StateKalmanNet(nn.Module):
         x_filtered_unclamped = x_predicted + correction
         # `x_filtered_unclamped` Tvar: [batch_size, state_dim]
 
-        # --- NOVÝ BLOK: OMEZENÍ STAVU (BEZ INPLACE) ---
-        
-        # Ořežeme jednotlivé komponenty. 
-        # .clamp() vrací NOVÝ tenzor, nemění původní.
-        px_clamped = x_filtered_unclamped[:, 0].clamp(self.system_model.min_x, self.system_model.max_x)
-        py_clamped = x_filtered_unclamped[:, 1].clamp(self.system_model.min_y, self.system_model.max_y)
-
-        max_vel = 200.0  
-        vx_clamped = x_filtered_unclamped[:, 2].clamp(-max_vel, max_vel)
-        vy_clamped = x_filtered_unclamped[:, 3].clamp(-max_vel, max_vel)
-        if torch.any((vx_clamped == max_vel) | (vx_clamped == -max_vel)):
-            print(f"Varování: Došlo k omezení rychlosti v ose X (max_vel={max_vel}).")
-        
-        if torch.any((vy_clamped == max_vel) | (vy_clamped == -max_vel)):
-            print(f"Varování: Došlo k omezení rychlosti v ose Y (max_vel={max_vel}).")
         # --- KONEC KONTROLY ---
         # Sestavíme z ořezaných komponent *nový* tenzor `x_filtered`.
         # Toto je teď náš finální, ořezaný stav s platným grafem.
-        x_filtered = torch.stack([px_clamped, py_clamped, vx_clamped, vy_clamped], dim=1)
+        x_filtered = x_filtered_unclamped
         # --- KONEC BLOKU ---
         # --- AKTUALIZACE STAVŮ PRO PŘÍŠTÍ KROK ---
         # Uložíme si hodnoty z aktuálního kroku `t` pro použití v kroku `t+1`.

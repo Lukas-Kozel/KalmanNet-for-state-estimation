@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 class DNN_KalmanNet_v2(nn.Module):
-    def __init__(self, system_model, hidden_size_multiplier=10, output_layer_multiplier=4, num_gru_layers=1):
+    def __init__(self, system_model, hidden_size_multiplier=10, output_layer_multiplier=4, num_gru_layers=1, gru_hidden_dim_multiplier=1):
         super(DNN_KalmanNet_v2, self).__init__()
 
         self.state_dim = system_model.state_dim
@@ -22,7 +22,7 @@ class DNN_KalmanNet_v2(nn.Module):
 
         # Dimenze skrytého stavu GRU
         # hidden_dim = (m^2 + n^2) * 10
-        self.gru_hidden_dim = (m*m + n*n) * 10
+        self.gru_hidden_dim = (m*m + n*n) * gru_hidden_dim_multiplier
 
         # 2. skrytá vrstva (výstupní)
         # H2_KNet = (m * n) * 1 * 4
@@ -31,7 +31,7 @@ class DNN_KalmanNet_v2(nn.Module):
         # Výstupní vrstva (vektorizovaný zisk)
         self.output_dim = m * n
 
-        # self.input_norm = nn.LayerNorm(self.input_dim).to(self.device)
+        self.input_norm = nn.LayerNorm(self.input_dim).to(self.device)
 
         self.input_layer = nn.Sequential(
             nn.Linear(self.input_dim, self.H1),
@@ -40,8 +40,8 @@ class DNN_KalmanNet_v2(nn.Module):
 
         self.gru = nn.GRU(
             self.H1,                  # Vstupní dimenze z předchozí vrstvy
-            self.gru_hidden_dim,      # Dimenze skrytého stavu (podle reference)
-            num_layers=num_gru_layers # Počet vrstev (tvůj hyperparametr)
+            self.gru_hidden_dim,      # Dimenze skrytého stavu 
+            num_layers=num_gru_layers # Počet vrstev 
         ).to(self.device)
 
         self.output_hidden_layer = nn.Sequential(
@@ -64,8 +64,9 @@ class DNN_KalmanNet_v2(nn.Module):
         """
 
         nn_input = torch.cat([state_inno, inovation, diff_state, diff_obs], dim=1)
-        # normalized_input = self.input_norm(nn_input)
-        activated_input = self.input_layer(nn_input)
+
+        normalized_input = self.input_norm(nn_input)
+        activated_input = self.input_layer(normalized_input)
 
         out_gru, h_new = self.gru(activated_input.unsqueeze(0), h_prev)
         out_gru_squeezed = out_gru.squeeze(0)

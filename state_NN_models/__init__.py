@@ -6,6 +6,11 @@ from .DNN_BayesianKalmanNet import DNN_BayesianKalmanNet
 from .DNN_KalmanNet_v2 import DNN_KalmanNet_v2
 from .StateKalmanNet_v2 import StateKalmanNet_v2
 from .StateKalmanNet_v2_4D_tan import StateKalmanNet_v2_4D_tan
+from .StateKalmanNet_arch2 import StateKalmanNet_arch2
+from .DNN_KalmanNet_arch2 import DNN_KalmanNet_arch2
+from .StateBayesianKalmanNet_v2 import StateBayesianKalmanNet_v2
+from .DNN_KalmanFormer import DNN_KalmanFormer
+from .KalmanFormer import KalmanFormer
 
 __all__ = [
     "DNN_KalmanNet",
@@ -16,4 +21,9 @@ __all__ = [
     "DNN_KalmanNet_v2",
     "StateKalmanNet_v2",
     "StateKalmanNet_v2_4D_tan",
+    "StateKalmanNet_arch2",
+    "DNN_KalmanNet_arch2",
+    "StateBayesianKalmanNet_v2",
+    "DNN_KalmanFormer",
+    "KalmanFormer",
 ]

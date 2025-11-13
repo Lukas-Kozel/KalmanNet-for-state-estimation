@@ -4,7 +4,7 @@ import torch.nn as nn
 import torch.nn.functional as func
 import torch.nn.init as init
 from .DNN_KalmanNet_v2 import DNN_KalmanNet_v2
-from copy import deepcopy # Potřeba pro `_detach`
+from copy import deepcopy
 
 class StateKalmanNet_v2_4D_tan(nn.Module): 
     def __init__(self, system_model, device, 
