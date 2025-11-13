@@ -69,13 +69,6 @@ class StateKalmanNet_v2(nn.Module):
 
         x_pred_raw = self.system_model.f(self.x_filtered_prev) # [B, m]
         y_pred_raw = self.system_model.h(x_pred_raw) # [B, n]
-
-        # --- STABILIZACE ---
-        # y_pred_nan_mask = torch.isnan(y_pred_raw) | torch.isinf(y_pred_raw)
-        # y_t_nan_mask = torch.isnan(y_t_raw) | torch.isinf(y_t_raw)
-        
-        # y_pred_safe = torch.where(y_pred_nan_mask, y_t_raw, y_pred_raw)
-        # y_t_safe = torch.where(y_t_nan_mask, y_pred_safe, y_t_raw)
         
         innovation_raw = y_t_raw - y_pred_raw
         
@@ -119,7 +112,6 @@ class StateKalmanNet_v2(nn.Module):
         if not torch.all(torch.isfinite(K_vec)):
             self._log_and_raise("K_vec (výstup DNN)", locals())
         
-        # --- KOREKCE ---
         K = K_vec.reshape(batch_size, self.state_dim, self.obs_dim)
         
         correction = (K @ norm_innovation.unsqueeze(-1)).squeeze(-1)
@@ -170,13 +162,10 @@ class StateKalmanNet_v2(nn.Module):
         print(f"Příčina: Tensor '{failed_tensor_name}' obsahuje NaN nebo Inf.")
         print(f"{'='*100}")
         
-        max_elements = 4 # Počet prvků z dávky k zobrazení
-        
-        # Bezpečné vypsání hodnoty (kdyby i tisk selhal)
+        max_elements = 4
         try:
             failed_value = local_vars.get(failed_tensor_name, "NELZE ZÍSKAT HODNOTU")
             
-            # --- ZMĚNA ZDE: Slicing ---
             display_str = ""
             if isinstance(failed_value, torch.Tensor):
                 batch_size = failed_value.shape[0] if failed_value.dim() > 0 else 1
@@ -186,7 +175,6 @@ class StateKalmanNet_v2(nn.Module):
                     display_str += f"\n... (zobrazeno prvních {display_size} z {batch_size} prvků)"
             else:
                 display_str = str(failed_value)
-            # --- KONEC ZMĚNY ---
                 
             print(f"Hodnota selhaného tensoru [{failed_tensor_name}]:\n{display_str}\n")
         except Exception as e:
@@ -194,7 +182,6 @@ class StateKalmanNet_v2(nn.Module):
 
         print(f"{'-'*40} KOMPLETNÍ STAV V OKAMŽIKU SELHÁNÍ {'-'*40}")
         
-        # Seznam proměnných k vypsání
         vars_to_log = [
             'y_t_raw', 
             'self.x_filtered_prev', 'self.y_prev', 'self.x_filtered_prev_prev', 
@@ -218,8 +205,7 @@ class StateKalmanNet_v2(nn.Module):
             if value is not None:
                 try:
                     print(f"--- {var_name} {source} ---")
-                    
-                    # --- ZMĚNA ZDE: Slicing ---
+
                     display_str = ""
                     if isinstance(value, torch.Tensor):
                         batch_size = value.shape[0] if value.dim() > 0 else 1
@@ -231,7 +217,6 @@ class StateKalmanNet_v2(nn.Module):
                             display_str += f"\n... (zobrazeno prvních {display_size} z {batch_size} prvků)"
                     else:
                         display_str = str(value)
-                    # --- KONEC ZMĚNY ---
 
                     print(f"Hodnota: {display_str}")
                     print(f"Shape: {value.shape if hasattr(value, 'shape') else 'N/A'}")
@@ -244,5 +229,4 @@ class StateKalmanNet_v2(nn.Module):
             
         print(f"{'='*100}")
         
-        # Vyvolání finální chyby
         raise RuntimeError(f"Selhání: Tensor '{failed_tensor_name}' je NaN nebo Inf! (Viz log výše)")

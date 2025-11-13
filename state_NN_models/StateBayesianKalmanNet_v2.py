@@ -108,7 +108,7 @@ class StateBayesianKalmanNet_v2(nn.Module):
         self.x_pred_prev = x_pred_raw.clone()         
         self.x_filtered_prev = x_filtered.clone()      
         self.y_prev = y_t_raw.clone()                    
-        self.h_prev = h_new # Uložíme již oclampovaný stav!                     
+        self.h_prev = h_new                    
         
         total_regularization = regs
 
@@ -132,9 +132,7 @@ class StateBayesianKalmanNet_v2(nn.Module):
     def _detach(self):
         """
         Odpojí všechny stavy přenášené mezi TBPTT okny.
-        Toto je klíčová funkce pro `train_state_KalmanNet_sliding_window`.
         """
-        # Clampujeme stavy PŘED odpojením
         self.h_prev = torch.clamp(self.h_prev.detach(), -100.0, 100.0)
         
         self.y_prev = self.y_prev.detach()
@@ -146,7 +144,6 @@ class StateBayesianKalmanNet_v2(nn.Module):
         """Pomocná funkce pro ladění NaN/Inf."""
         print(f"!!! CHYBA: Detekován NaN/Inf v '{var_name}' !!!")
         
-        # Vypiš hodnoty všech rysů a stavů
         print("--- Stavy (t-1) ---")
         print(f"h_prev: {torch.isnan(local_vars['self'].h_prev).any()}, {torch.isinf(local_vars['self'].h_prev).any()}")
         print(f"y_prev: {torch.isnan(local_vars['self'].y_prev).any()}, {torch.isinf(local_vars['self'].y_prev).any()}")

@@ -18,7 +18,6 @@ class KalmanFormer(nn.Module):
         self.state_dim = system_model.state_dim
         self.obs_dim = system_model.obs_dim
 
-        # --- ZMĚNA ZDE ---
         self.dnn = DNN_KalmanFormer(
             system_model,
             d_model=d_model,
@@ -28,15 +27,13 @@ class KalmanFormer(nn.Module):
             dim_feedforward=dim_feedforward,
             dropout=dropout
         ).to(device)
-        # --- KONEC ZMĚNY ---
 
-        # self.h_prev byl ODSTRANĚN
         self.y_prev = None                  
         self.x_filtered_prev = None     
         self.x_filtered_prev_prev = None  
         self.x_pred_prev = None         
         
-        self.init_weights() # Tato metoda je stále užitečná pro lineární vrstvy
+        self.init_weights()
 
     def reset(self, batch_size=1, initial_state=None):
         """Inicializuje stavy pro novou sekvenci (dávku)."""
@@ -51,8 +48,6 @@ class KalmanFormer(nn.Module):
         
         with torch.no_grad():
             self.y_prev = self.system_model.h(self.x_filtered_prev)
-        
-        # self.h_prev byl ODSTRANĚN
 
     def step(self, y_t_raw):
         """
@@ -65,7 +60,7 @@ class KalmanFormer(nn.Module):
         y_pred_raw = self.system_model.h(x_pred_raw) # [B, n]
         
         innovation_raw = y_t_raw - y_pred_raw
-        innovation_safe = innovation_raw # (vaše stabilizace zde)
+        innovation_safe = innovation_raw
         
         # F1: Rozdíl pozorování
         obs_diff = y_t_raw - self.y_prev
@@ -85,20 +80,16 @@ class KalmanFormer(nn.Module):
         norm_innovation = innovation
         norm_fw_evol_diff = fw_evol_diff
         norm_fw_update_diff = fw_update_diff
-        # --- ZMĚNA ZDE ---
-        # Volání DNN již nepracuje se skrytým stavem h_prev
         K_vec = self.dnn(
             norm_obs_diff,       # F1 (L2-norm)
             norm_innovation,     # F2 (L2-norm)
             norm_fw_evol_diff,   # F3 (L2-norm)
             norm_fw_update_diff  # F4 (L2-norm)
         )
-        # --- KONEC ZMĚNY ---
         
         if not torch.all(torch.isfinite(K_vec)):
             self._log_and_raise("K_vec (výstup DNN)", locals())
-        
-        # --- KOREKCE (zůstává stejná) ---
+
         K = K_vec.reshape(batch_size, self.state_dim, self.obs_dim)
         
         correction = (K @ norm_innovation.unsqueeze(-1)).squeeze(-1)
@@ -109,17 +100,14 @@ class KalmanFormer(nn.Module):
         if not torch.all(torch.isfinite(x_filtered_raw)):
             self._log_and_raise("x_filtered_raw (finální stav)", locals())
 
-        # --- AKTUALIZACE STAVŮ (zůstává stejná, jen bez h_prev) ---
         self.x_filtered_prev_prev = self.x_filtered_prev.clone() 
         self.x_pred_prev = x_pred_raw.clone()         
         self.x_filtered_prev = x_filtered_raw.clone()      
         self.y_prev = y_t_raw.clone()                    
-        # self.h_prev = h_new byl ODSTRANĚN
         
         return x_filtered_raw
 
     def init_weights(self) -> None:
-        # Inicializace pro lineární vrstvy a Transformer vrstvy
         for m in self.modules():
             if isinstance(m, nn.Linear):
                 init.kaiming_uniform_(m.weight, nonlinearity='relu')
@@ -135,16 +123,12 @@ class KalmanFormer(nn.Module):
 
     def _detach(self):
         """Odpojí všechny stavy přenášené mezi TBPTT okny."""
-        # self.h_prev byl ODSTRANĚN
         self.y_prev = self.y_prev.detach()
         self.x_filtered_prev = self.x_filtered_prev.detach()
         self.x_filtered_prev_prev = self.x_filtered_prev_prev.detach()
         self.x_pred_prev = self.x_pred_prev.detach()
 
-    # Metoda _log_and_raise zůstává stejná
     def _log_and_raise(self, failed_tensor_name, local_vars):
-        # (Sem zkopírujte vaši stávající implementaci _log_and_raise)
         print(f"\n{'!'*40} SELHÁNÍ DETEKOVÁNO {'!'*40}")
         print(f"Příčina: Tensor '{failed_tensor_name}' obsahuje NaN nebo Inf.")
-        # ... zbytek vaší logovací funkce ...
         raise RuntimeError(f"Selhání: Tensor '{failed_tensor_name}' je NaN nebo Inf!")

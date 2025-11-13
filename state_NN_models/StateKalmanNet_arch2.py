@@ -27,13 +27,12 @@ class StateKalmanNet_arch2(nn.Module):
             output_layer_multiplier=output_layer_multiplier
         ).to(device)
 
-        # Předchozí stavy pro výpočet rysů (features)
+        # Předchozí stavy pro výpočet features
         self.y_prev = None                  
         self.x_filtered_prev = None     
         self.x_filtered_prev_prev = None  
         self.x_pred_prev = None         
         
-        # --- ZMĚNA ZDE: Tři oddělené skryté stavy ---
         self.h_prev_Q = None
         self.h_prev_Sigma = None
         self.h_prev_S = None
@@ -47,15 +46,12 @@ class StateKalmanNet_arch2(nn.Module):
         else:
             initial_state = initial_state.clone().to(self.device)
 
-        # Stavy filtru
         self.x_filtered_prev = initial_state
         self.x_filtered_prev_prev = initial_state.clone()
         self.x_pred_prev = initial_state.clone()
         
-        with torch.no_grad():
-            self.y_prev = self.system_model.h(self.x_filtered_prev)
-        
-        # --- ZMĚNA ZDE: Inicializace 3 skrytých stavů ---
+        self.y_prev = self.system_model.h(self.x_filtered_prev)
+
         self.h_prev_Q = torch.zeros(
             self.dnn.GRU_Q.num_layers, # 1
             batch_size, 
@@ -87,19 +83,17 @@ class StateKalmanNet_arch2(nn.Module):
 
         innovation_raw = y_t_raw - y_pred_raw
         
-        # --- Výpočet 4 rysů (features) ---
+        # --- Výpočet 4 features ---
         obs_diff = y_t_raw - self.y_prev
         innovation = innovation_raw
         fw_evol_diff = self.x_filtered_prev - self.x_filtered_prev_prev
         fw_update_diff = self.x_filtered_prev - self.x_pred_prev
 
-        # Normalizace rysů
         norm_obs_diff = func.normalize(obs_diff, p=2, dim=1, eps=1e-12)
         norm_innovation = func.normalize(innovation, p=2, dim=1, eps=1e-12)
         norm_fw_evol_diff = func.normalize(fw_evol_diff, p=2, dim=1, eps=1e-12)
         norm_fw_update_diff = func.normalize(fw_update_diff, p=2, dim=1, eps=1e-12) 
 
-        # --- ZMĚNA ZDE: Volání DNN s 3 skrytými stavy ---
         if not torch.all(torch.isfinite(self.h_prev_Q)) or \
            not torch.all(torch.isfinite(self.h_prev_Sigma)) or \
            not torch.all(torch.isfinite(self.h_prev_S)):
@@ -107,7 +101,7 @@ class StateKalmanNet_arch2(nn.Module):
 
         if not torch.all(torch.isfinite(norm_innovation)):
             self._log_and_raise("norm_innovation (vstup GRU)", locals())
-        # ... (další kontroly vstupů) ...
+
 
         K_vec, h_new_Q, h_new_Sigma, h_new_S = self.dnn(
             norm_obs_diff,       
@@ -122,7 +116,7 @@ class StateKalmanNet_arch2(nn.Module):
         if not torch.all(torch.isfinite(K_vec)):
             self._log_and_raise("K_vec (výstup DNN)", locals())
         
-        # --- KOREKCE (stejná jako dříve) ---
+
         K = K_vec.reshape(batch_size, self.state_dim, self.obs_dim)
         
         correction = (K @ innovation.unsqueeze(-1)).squeeze(-1)
@@ -133,13 +127,13 @@ class StateKalmanNet_arch2(nn.Module):
         if not torch.all(torch.isfinite(x_filtered_raw)):
             self._log_and_raise("x_filtered_raw (finální stav)", locals())
 
-        # --- Aktualizace stavů filtru ---
+
         self.x_filtered_prev_prev = self.x_filtered_prev.clone() 
         self.x_pred_prev = x_pred_raw.clone()         
         self.x_filtered_prev = x_filtered_raw.clone()      
         self.y_prev = y_t_raw.clone()                    
         
-        # --- ZMĚNA ZDE: Uložení 3 nových skrytých stavů ---
+
         self.h_prev_Q = h_new_Q
         self.h_prev_Sigma = h_new_Sigma
         self.h_prev_S = h_new_S
@@ -147,7 +141,6 @@ class StateKalmanNet_arch2(nn.Module):
         return x_filtered_raw
 
     def init_weights(self) -> None:
-        # (Beze změny)
         for m in self.modules():
             if isinstance(m, nn.Linear):
                 init.kaiming_uniform_(m.weight, nonlinearity='relu')
@@ -164,7 +157,6 @@ class StateKalmanNet_arch2(nn.Module):
 
     def _detach(self):
         """Odpojí všechny stavy přenášené mezi TBPTT okny."""
-        # --- ZMĚNA ZDE: Detach 3 skrytých stavů ---
         self.h_prev_Q = self.h_prev_Q.detach()
         self.h_prev_Sigma = self.h_prev_Sigma.detach()
         self.h_prev_S = self.h_prev_S.detach()
@@ -177,7 +169,6 @@ class StateKalmanNet_arch2(nn.Module):
     def _log_and_raise(self, failed_tensor_name, local_vars):
         """
         Helper metoda pro vypsání kompletního stavu při selhání.
-        (Beze změny, ponecháváme zkrácený výpis)
         """
         print(f"\n{'!'*40} SELHÁNÍ DETEKOVÁNO {'!'*40}")
         print(f"Příčina: Tensor '{failed_tensor_name}' obsahuje NaN nebo Inf.")
