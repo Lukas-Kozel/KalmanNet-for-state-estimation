@@ -70,43 +70,29 @@ class StateKalmanNet_v2(nn.Module):
         x_pred_raw = self.system_model.f(self.x_filtered_prev) # [B, m]
         y_pred_raw = self.system_model.h(x_pred_raw) # [B, n]
         
-        innovation_raw = y_t_raw - y_pred_raw
-        
-        innovation_safe = innovation_raw
+        innovation = y_t_raw - y_pred_raw
         
         # F1: Rozdíl pozorování
         obs_diff = y_t_raw - self.y_prev
 
-        # F2: Inovace 
-        innovation = innovation_safe
-
         # F3: Rozdíl posterior odhadů
-        fw_evol_diff = self.x_filtered_prev - self.x_filtered_prev_prev
+        fw_evol_diff = x_pred_raw - self.x_filtered_prev_prev
 
         # F4: Rozdíl (update)
-        fw_update_diff = self.x_filtered_prev - self.x_pred_prev
-
-        norm_obs_diff = func.normalize(obs_diff, p=2, dim=1, eps=1e-12)
-        norm_innovation = func.normalize(innovation, p=2, dim=1, eps=1e-12)
-        norm_fw_evol_diff = func.normalize(fw_evol_diff, p=2, dim=1, eps=1e-12)
-        norm_fw_update_diff = func.normalize(fw_update_diff, p=2, dim=1, eps=1e-12) 
-        # norm_obs_diff = obs_diff
-        # norm_innovation = innovation
-        # norm_fw_evol_diff = fw_evol_diff
-        # norm_fw_update_diff = fw_update_diff
+        fw_update_diff = x_pred_raw - self.x_filtered_prev
 
         if not torch.all(torch.isfinite(self.h_prev)):
             self._log_and_raise("self.h_prev (vstup GRU)", locals())
-        if not torch.all(torch.isfinite(norm_obs_diff)):
-            self._log_and_raise("norm_obs_diff (vstup GRU)", locals())
-        if not torch.all(torch.isfinite(norm_innovation)):
-            self._log_and_raise("norm_innovation (vstup GRU)", locals())
+        if not torch.all(torch.isfinite(obs_diff)):
+            self._log_and_raise("obs_diff (vstup GRU)", locals())
+        if not torch.all(torch.isfinite(innovation)):
+            self._log_and_raise("innovation (vstup GRU)", locals())
         
         K_vec, h_new = self.dnn(
-            norm_obs_diff,       # F1 (L2-norm)
-            norm_innovation,     # F2 (L2-norm)
-            norm_fw_evol_diff,   # F3 (L2-norm)
-            norm_fw_update_diff, # F4 (L2-norm)
+            obs_diff,       # F1
+            innovation,     # F2
+            fw_evol_diff,   # F3
+            fw_update_diff, # F4
             self.h_prev          # h_{t-1}
         )
         if not torch.all(torch.isfinite(K_vec)):
@@ -114,7 +100,7 @@ class StateKalmanNet_v2(nn.Module):
         
         K = K_vec.reshape(batch_size, self.state_dim, self.obs_dim)
         
-        correction = (K @ norm_innovation.unsqueeze(-1)).squeeze(-1)
+        correction = (K @ innovation.unsqueeze(-1)).squeeze(-1)
         if not torch.all(torch.isfinite(correction)):
             self._log_and_raise("correction (K @ innov)", locals())
 
@@ -131,18 +117,34 @@ class StateKalmanNet_v2(nn.Module):
         return x_filtered_raw
 
     def init_weights(self) -> None:
-        for m in self.modules():
+        """
+        Klíčová metoda pro stabilitu:
+        Všechny vrstvy inicializujeme standardně, ALE výstupní vrstvu pro K
+        vynulujeme (nebo nastavíme velmi blízko nule).
+        """
+        for name, m in self.dnn.named_modules():
             if isinstance(m, nn.Linear):
-                init.kaiming_uniform_(m.weight, nonlinearity='relu')
-                if m.bias is not None:
-                    init.zeros_(m.bias)
+                if "output_final_linear" in name: 
+                    init.constant_(m.weight, 0.01)
+                    if m.bias is not None:
+                        init.constant_(m.bias, 0.0)
+                    print(f"DEBUG: Vrstva '{name}' inicializována na nuly (Start K=0).")
+                else:
+                    init.kaiming_uniform_(m.weight, nonlinearity='relu')
+                    if m.bias is not None:
+                        init.zeros_(m.bias)
+            
+            elif isinstance(m, nn.LayerNorm):
+                init.constant_(m.bias, 0)
+                init.constant_(m.weight, 1.0)
+            
             elif isinstance(m, nn.GRU):
-                for name, param in m.named_parameters():
-                    if 'weight_ih' in name:
+                for param_name, param in m.named_parameters():
+                    if 'weight_ih' in param_name:
                         init.xavier_uniform_(param.data)
-                    elif 'weight_hh' in name:
+                    elif 'weight_hh' in param_name:
                         init.orthogonal_(param.data)
-                    elif 'bias' in name:
+                    elif 'bias' in param_name:
                         param.data.fill_(0)
 
     def _detach(self):

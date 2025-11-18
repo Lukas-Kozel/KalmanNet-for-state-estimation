@@ -87,19 +87,17 @@ def generate_data(system, num_trajectories, seq_len):
             
     return x_data, y_data
 
-def generate_data_for_map(system, num_trajectories, seq_len):
+def generate_data_for_map(system, num_trajectories, seq_len,force_initial_state_zero=False):
     device = system.Ex0.device
     
     # Získáme hranice mapy ze systémového modelu
     min_x, max_x = system.min_x, system.max_x
     min_y, max_y = system.min_y, system.max_y
     print(f"INFO: Generátor dat používá hranice X:[{min_x:.2f}-{max_x:.2f}], Y:[{min_y:.2f}-{max_y:.2f}]")
-
+    print(f"INFO: Vynucený start v nule: {force_initial_state_zero}")
     x_data = torch.zeros(num_trajectories, seq_len, system.state_dim, device=device)
     y_data = torch.zeros(num_trajectories, seq_len, system.obs_dim, device=device)
 
-    print(f"Generuji {num_trajectories} platných trajektorií (metoda zahození)...")
-    
     generated_count = 0
     total_attempts = 0
     
@@ -110,10 +108,15 @@ def generate_data_for_map(system, num_trajectories, seq_len):
         temp_x_traj = torch.zeros(seq_len, system.state_dim, device=device)
         temp_y_traj = torch.zeros(seq_len, system.obs_dim, device=device)
         
-        x_current = system.get_initial_state().view(1, -1)
+        if force_initial_state_zero:
+            # Režim tréninku: Vynucený start v lokálním počátku
+            x_current = torch.tensor([[0.0, 0.0, 0.0, 0.0]], device=device)
+        else:
+            x_current = system.get_initial_state().view(1, -1)
+            
+        # Pokud by startovní bod byl mimo (což by neměl, pokud je mapa správně posunutá), clampneme ho
         x_current[0, 0] = x_current[0, 0].clamp(min_x, max_x)
         x_current[0, 1] = x_current[0, 1].clamp(min_y, max_y)
-
         for t in range(seq_len):
 
             px_curr, py_curr = x_current[0, 0].item(), x_current[0, 1].item()
