@@ -20,7 +20,6 @@ class StateKalmanNet_arch2(nn.Module):
         self.state_dim = system_model.state_dim
         self.obs_dim = system_model.obs_dim
 
-        # Instance nové DNN (Arch 2)
         self.dnn = DNN_KalmanNet_arch2(
             system_model, 
             hidden_size_multiplier=hidden_size_multiplier, 
@@ -52,24 +51,16 @@ class StateKalmanNet_arch2(nn.Module):
         
         self.y_prev = self.system_model.h(self.x_filtered_prev)
 
-        self.h_prev_Q = torch.zeros(
-            self.dnn.GRU_Q.num_layers, # 1
-            batch_size, 
-            self.dnn.d_hidden_Q,       # m*m
-            device=self.device
+        h_Q_init, h_Sigma_init, h_S_init = self.dnn.init_hidden_states(
+            batch_size,
+            prior_Q=self.system_model.Q,      # Matice Q z modelu
+            prior_Sigma=self.system_model.P0, # Počáteční kovariance P0
+            prior_S=self.system_model.R       # Matice R z modelu
         )
-        self.h_prev_Sigma = torch.zeros(
-            self.dnn.GRU_Sigma.num_layers, # 1
-            batch_size, 
-            self.dnn.d_hidden_Sigma,   # m*m
-            device=self.device
-        )
-        self.h_prev_S = torch.zeros(
-            self.dnn.GRU_S.num_layers, # 1
-            batch_size, 
-            self.dnn.d_hidden_S,       # n*n
-            device=self.device
-        )
+        
+        self.h_prev_Q = h_Q_init
+        self.h_prev_Sigma = h_Sigma_init
+        self.h_prev_S = h_S_init
 
     def step(self, y_t_raw):
         """
@@ -89,10 +80,14 @@ class StateKalmanNet_arch2(nn.Module):
         fw_evol_diff = self.x_filtered_prev - self.x_filtered_prev_prev
         fw_update_diff = self.x_filtered_prev - self.x_pred_prev
 
-        norm_obs_diff = func.normalize(obs_diff, p=2, dim=1, eps=1e-12)
-        norm_innovation = func.normalize(innovation, p=2, dim=1, eps=1e-12)
-        norm_fw_evol_diff = func.normalize(fw_evol_diff, p=2, dim=1, eps=1e-12)
-        norm_fw_update_diff = func.normalize(fw_update_diff, p=2, dim=1, eps=1e-12) 
+        # norm_obs_diff = func.normalize(obs_diff, p=2, dim=1, eps=1e-12)
+        # norm_innovation = func.normalize(innovation, p=2, dim=1, eps=1e-12)
+        # norm_fw_evol_diff = func.normalize(fw_evol_diff, p=2, dim=1, eps=1e-12)
+        # norm_fw_update_diff = func.normalize(fw_update_diff, p=2, dim=1, eps=1e-12) 
+        norm_obs_diff = obs_diff
+        norm_innovation = innovation
+        norm_fw_evol_diff = fw_evol_diff
+        norm_fw_update_diff = fw_update_diff
 
         if not torch.all(torch.isfinite(self.h_prev_Q)) or \
            not torch.all(torch.isfinite(self.h_prev_Sigma)) or \
@@ -119,7 +114,7 @@ class StateKalmanNet_arch2(nn.Module):
 
         K = K_vec.reshape(batch_size, self.state_dim, self.obs_dim)
         
-        correction = (K @ innovation.unsqueeze(-1)).squeeze(-1)
+        correction = (K @ norm_innovation.unsqueeze(-1)).squeeze(-1)
         if not torch.all(torch.isfinite(correction)):
             self._log_and_raise("correction (K @ innov)", locals())
 

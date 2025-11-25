@@ -46,9 +46,9 @@ class StateKalmanNet_v2(nn.Module):
         else:
             initial_state = initial_state.clone().to(self.device)
 
-        self.x_filtered_prev = initial_state
-        self.x_filtered_prev_prev = initial_state.clone()
-        self.x_pred_prev = initial_state.clone()
+        self.x_filtered_prev = initial_state.detach().clone()
+        self.x_filtered_prev_prev = initial_state.detach().clone()
+        self.x_pred_prev = initial_state.detach().clone()
         
         with torch.no_grad():
             self.y_prev = self.system_model.h(self.x_filtered_prev)
@@ -70,16 +70,20 @@ class StateKalmanNet_v2(nn.Module):
         x_pred_raw = self.system_model.f(self.x_filtered_prev) # [B, m]
         y_pred_raw = self.system_model.h(x_pred_raw) # [B, n]
         
+
+        #mx = 1e+6
+        #x_pred_raw = torch.clip(x_pred_raw, max=mx, min=-mx)
         innovation = y_t_raw - y_pred_raw
         
         # F1: Rozdíl pozorování
         obs_diff = y_t_raw - self.y_prev
 
         # F3: Rozdíl posterior odhadů
-        fw_evol_diff = x_pred_raw - self.x_filtered_prev_prev
+        # fw_evol_diff = x_pred_raw - self.x_filtered_prev_prev
+        fw_evol_diff = self.x_filtered_prev - self.x_filtered_prev_prev
 
         # F4: Rozdíl (update)
-        fw_update_diff = x_pred_raw - self.x_filtered_prev
+        fw_update_diff = self.x_filtered_prev - self.x_pred_prev
 
         if not torch.all(torch.isfinite(self.h_prev)):
             self._log_and_raise("self.h_prev (vstup GRU)", locals())
@@ -104,7 +108,8 @@ class StateKalmanNet_v2(nn.Module):
         if not torch.all(torch.isfinite(correction)):
             self._log_and_raise("correction (K @ innov)", locals())
 
-        x_filtered_raw = x_pred_raw + correction 
+        x_filtered_raw = x_pred_raw + correction
+         
         if not torch.all(torch.isfinite(x_filtered_raw)):
             self._log_and_raise("x_filtered_raw (finální stav)", locals())
 

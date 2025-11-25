@@ -71,7 +71,6 @@ class KalmanFormer(nn.Module):
         # F4: Rozdíl (update)
         fw_update_diff = self.x_filtered_prev - self.x_pred_prev
 
-        # Normalizace rysů (stejné jako u vás)
         # norm_obs_diff = func.normalize(obs_diff, p=2, dim=1, eps=1e-12)
         # norm_innovation = func.normalize(innovation, p=2, dim=1, eps=1e-12)
         # norm_fw_evol_diff = func.normalize(fw_evol_diff, p=2, dim=1, eps=1e-12)
@@ -129,6 +128,79 @@ class KalmanFormer(nn.Module):
         self.x_pred_prev = self.x_pred_prev.detach()
 
     def _log_and_raise(self, failed_tensor_name, local_vars):
+        """
+        Helper metoda pro vypsání kompletního stavu při selhání.
+        Nyní vypisuje pouze prvních 'max_elements' prvků z dávky pro čitelnost.
+        """
         print(f"\n{'!'*40} SELHÁNÍ DETEKOVÁNO {'!'*40}")
         print(f"Příčina: Tensor '{failed_tensor_name}' obsahuje NaN nebo Inf.")
-        raise RuntimeError(f"Selhání: Tensor '{failed_tensor_name}' je NaN nebo Inf!")
+        print(f"{'='*100}")
+        
+        max_elements = 4
+        try:
+            failed_value = local_vars.get(failed_tensor_name, "NELZE ZÍSKAT HODNOTU")
+            
+            display_str = ""
+            if isinstance(failed_value, torch.Tensor):
+                batch_size = failed_value.shape[0] if failed_value.dim() > 0 else 1
+                display_size = min(max_elements, batch_size)
+                display_str = f"{failed_value[0:display_size]}"
+                if batch_size > display_size:
+                    display_str += f"\n... (zobrazeno prvních {display_size} z {batch_size} prvků)"
+            else:
+                display_str = str(failed_value)
+                
+            print(f"Hodnota selhaného tensoru [{failed_tensor_name}]:\n{display_str}\n")
+        except Exception as e:
+            print(f"Nepodařilo se vypsat hodnotu selhaného tensoru: {e}\n")
+
+        print(f"{'-'*40} KOMPLETNÍ STAV V OKAMŽIKU SELHÁNÍ {'-'*40}")
+        
+        vars_to_log = [
+            'y_t_raw', 
+            'self.x_filtered_prev', 'self.y_prev', 'self.x_filtered_prev_prev', 
+            'self.x_pred_prev', 'self.h_prev',
+            'x_pred_raw', 'y_pred_raw', 'innovation_raw', 'obs_diff', 
+            'fw_evol_diff', 'fw_update_diff',
+            'norm_obs_diff', 'norm_innovation', 'norm_fw_evol_diff', 'norm_fw_update_diff',
+            'K_vec', 'correction', 'x_filtered_raw'
+        ]
+        
+        for var_name in vars_to_log:
+            value = None
+            source = ""
+            if var_name in local_vars:
+                value = local_vars[var_name]
+                source = "(lokální)"
+            elif hasattr(self, var_name.split('.')[-1]):
+                value = getattr(self, var_name.split('.')[-1])
+                source = "(ze self)"
+            
+            if value is not None:
+                try:
+                    print(f"--- {var_name} {source} ---")
+
+                    display_str = ""
+                    if isinstance(value, torch.Tensor):
+                        batch_size = value.shape[0] if value.dim() > 0 else 1
+                        display_size = min(max_elements, batch_size)
+                        sliced_value = value[0:display_size]
+                        
+                        display_str = f"{sliced_value}"
+                        if batch_size > display_size:
+                            display_str += f"\n... (zobrazeno prvních {display_size} z {batch_size} prvků)"
+                    else:
+                        display_str = str(value)
+
+                    print(f"Hodnota: {display_str}")
+                    print(f"Shape: {value.shape if hasattr(value, 'shape') else 'N/A'}")
+                    print(f"Obsahuje NaN: {torch.any(torch.isnan(value)) if isinstance(value, torch.Tensor) else 'N/A'}")
+                    print(f"Obsahuje Inf: {torch.any(torch.isinf(value)) if isinstance(value, torch.Tensor) else 'N/A'}\n")
+                
+                except Exception as e:
+                    print(f"--- {var_name} {source} ---")
+                    print(f"Nelze vypsat hodnotu: {e}\n")
+            
+        print(f"{'='*100}")
+        
+        raise RuntimeError(f"Selhání: Tensor '{failed_tensor_name}' je NaN nebo Inf! (Viz log výše)")
