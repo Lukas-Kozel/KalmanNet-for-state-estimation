@@ -34,24 +34,24 @@ class StateBayesianKalmanNet_v2(nn.Module):
 
     def reset(self, batch_size=1, initial_state=None):
         """
-        Inicializuje všechny stavy pro novou sekvenci (dávku).
+        Initializes all states for a new sequence (batch).
         """
         if initial_state is None:
             initial_state = torch.zeros(batch_size, self.state_dim, device=self.device)
         else:
             initial_state = initial_state.clone().to(self.device)
 
-        # Stavy jsou RAW
-        self.x_filtered_prev = initial_state      # x_{t-1|t-1} (začíná jako x_0|0)
-        self.x_filtered_prev_prev = initial_state.clone() # x_{t-2|t-2} (začíná jako x_0|0)
+        # States are RAW
+        self.x_filtered_prev = initial_state      # x_{t-1|t-1} (starts as x_0|0)
+        self.x_filtered_prev_prev = initial_state.clone() # x_{t-2|t-2} (starts as x_0|0)
         
         with torch.no_grad():
-            # Musíme spočítat y_prev (y_{t-1}) a x_pred_prev (x_{t-1|t-2})
+            # We need to compute y_prev (y_{t-1}) and x_pred_prev (x_{t-1|t-2})
             # Pro t=1 je x_{t-1|t-2} = x_{0|-1}
-            # Pro jednoduchost můžeme předpokládat x_{0|-1} = x_0|0
+            # For simplicity assume x_{0|-1} = x_0|0
             # a y_{t-1} = y_0 = h(x_0|0)
-            self.x_pred_prev = initial_state.clone()        # x_{t-1|t-2} (začíná jako x_0|0)
-            self.y_prev = self.system_model.h(self.x_filtered_prev) # y_{t-1} (začíná jako y_0)
+            self.x_pred_prev = initial_state.clone()        # x_{t-1|t-2} (starts as x_0|0)
+            self.y_prev = self.system_model.h(self.x_filtered_prev) # y_{t-1} (starts as y_0)
         
         self.h_prev = torch.zeros(
             self.dnn.gru.num_layers, 
@@ -62,17 +62,17 @@ class StateBayesianKalmanNet_v2(nn.Module):
 
     def step(self, y_t):
         y_t_raw = y_t.to(self.device)
-        # 1. PREDIKCE (pro aktuální čas t)
+        # 1. PREDICTION (for current time t)
         # x_{t|t-1} = f(x_{t-1|t-1})
         x_pred_raw = self.system_model.f(self.x_filtered_prev)
         # y_{t|t-1} = h(x_{t|t-1})
         y_pred_raw = self.system_model.h(x_pred_raw)
 
-        # Ošetření dimenzí
+        # Dimension handling
         if y_pred_raw.dim() == 1: y_pred_raw = y_pred_raw.unsqueeze(-1)
         if y_t_raw.dim() == 1: y_t_raw = y_t_raw.unsqueeze(-1)
 
-        # 2. VÝPOČET VSTUPŮ PRO DNN
+        # 2. COMPUTE INPUTS FOR DNN
         # x_{t-1|t-1} - x_{t-1|t-2}
         fw_update_diff = self.x_filtered_prev - self.x_pred_prev
         # y_t - y_{t|t-1}
@@ -93,7 +93,7 @@ class StateBayesianKalmanNet_v2(nn.Module):
         if not torch.all(torch.isfinite(norm_innovation)):
             self._log_and_raise("norm_innovation (vstup GRU)", locals())
         
-        # 3. PRŮCHOD SÍTÍ A KOREKCE
+        # 3. NETWORK FORWARD AND CORRECTION
         K_vec, h_new, regs = self.dnn(norm_fw_update_diff, norm_innovation, norm_fw_evol_diff, norm_obs_diff, self.h_prev)
         
         K = K_vec.reshape(-1, self.state_dim, self.obs_dim)
@@ -102,7 +102,7 @@ class StateBayesianKalmanNet_v2(nn.Module):
             self._log_and_raise("correction (K @ innov)", locals())
         x_filtered = x_pred_raw + correction
         if not torch.all(torch.isfinite(x_filtered)):
-            self._log_and_raise("x_filtered (finální stav)", locals())
+            self._log_and_raise("x_filtered (final state)", locals())
 
         self.x_filtered_prev_prev = self.x_filtered_prev.clone() 
         self.x_pred_prev = x_pred_raw.clone()         
@@ -131,7 +131,7 @@ class StateBayesianKalmanNet_v2(nn.Module):
 
     def _detach(self):
         """
-        Odpojí všechny stavy přenášené mezi TBPTT okny.
+        Detach all states carried across TBPTT windows.
         """
         self.h_prev = torch.clamp(self.h_prev.detach(), -100.0, 100.0)
         
@@ -141,10 +141,10 @@ class StateBayesianKalmanNet_v2(nn.Module):
         self.x_pred_prev = self.x_pred_prev.detach()
 
     def _log_and_raise(self, var_name, local_vars):
-        """Pomocná funkce pro ladění NaN/Inf."""
-        print(f"!!! CHYBA: Detekován NaN/Inf v '{var_name}' !!!")
+        """Helper function for debugging NaN/Inf."""
+        print(f"!!! ERROR: NaN/Inf detected in '{var_name}' !!!")
         
-        print("--- Stavy (t-1) ---")
+        print("--- States (t-1) ---")
         print(f"h_prev: {torch.isnan(local_vars['self'].h_prev).any()}, {torch.isinf(local_vars['self'].h_prev).any()}")
         print(f"y_prev: {torch.isnan(local_vars['self'].y_prev).any()}, {torch.isinf(local_vars['self'].y_prev).any()}")
         print(f"x_filtered_prev: {torch.isnan(local_vars['self'].x_filtered_prev).any()}, {torch.isinf(local_vars['self'].x_filtered_prev).any()}")
@@ -165,4 +165,4 @@ class StateBayesianKalmanNet_v2(nn.Module):
         if 'K_vec' in local_vars:
              print(f"K_vec: {torch.isnan(local_vars['K_vec']).any()}, {torch.isinf(local_vars['K_vec']).any()}")
         
-        raise RuntimeError(f"NaN/Inf detekován v: {var_name}")
+        raise RuntimeError(f"NaN/Inf detected in: {var_name}")

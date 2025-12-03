@@ -40,7 +40,7 @@ class DNN_KalmanNet_arch2(nn.Module):
         self.FC1 = nn.Sequential(
             nn.Linear(self.d_input_FC1, self.d_output_FC1), nn.ReLU())
 
-        # FC2: Výpočet Kalmanova zisku K (z Sigma a S)
+        # FC2: Compute Kalman gain K (from Sigma and S)
         self.d_input_FC2 = self.d_hidden_S + self.d_hidden_Sigma
         self.d_output_FC2 = n * m
         self.d_hidden_FC2 = self.d_input_FC2 * out_mult_KNet
@@ -85,16 +85,16 @@ class DNN_KalmanNet_arch2(nn.Module):
         
 
         # 1. Q-GRU Větev
-        in_Q = self.FC5(fw_evol_diff) # Zpracování F3
+        in_Q = self.FC5(fw_evol_diff) # Process F3
         out_Q, h_new_Q = self.GRU_Q(in_Q.unsqueeze(0), h_prev_Q)
         out_Q = out_Q.squeeze(0) # [B, m*m]
 
         # 2. Sigma-GRU Větev (Prior Covariance Estimation)
-        in_FC6 = self.FC6(fw_update_diff) # Zpracování F4
+        in_FC6 = self.FC6(fw_update_diff) # Process F4
         in_Sigma = torch.cat([out_Q, in_FC6], dim=1)
         
-        # Standardní GRU krok, ALE pozor: h_new_Sigma z tohoto volání ignorujeme!
-        # Autoři používají výstup z FC4 jako hidden state pro další krok.
+        # Standard GRU step, but note: we ignore h_new_Sigma from this call!
+        # Authors use the output of FC4 as the hidden state for the next step.
         out_Sigma, _ = self.GRU_Sigma(in_Sigma.unsqueeze(0), h_prev_Sigma)
         out_Sigma = out_Sigma.squeeze(0) # [B, m*m]
 
@@ -106,7 +106,7 @@ class DNN_KalmanNet_arch2(nn.Module):
         out_S, h_new_S = self.GRU_S(in_S.unsqueeze(0), h_prev_S)
         out_S = out_S.squeeze(0) # [B, n*n]
 
-        # 4. Výpočet Kalmanova Zisku (K)
+        # 4. Compute Kalman Gain (K)
         in_FC2 = torch.cat([out_Sigma, out_S], dim=1)
         K_vec = self.FC2(in_FC2) # [B, m*n]
 
@@ -116,26 +116,26 @@ class DNN_KalmanNet_arch2(nn.Module):
         # FC4: Kombinace Sigma (Prior) a korekce -> Sigma (Posterior)
         in_FC4 = torch.cat([out_Sigma, out_FC3], dim=1)
         out_FC4 = self.FC4(in_FC4) # [B, m*m]
-        # Pro Sigma bereme VÝSTUP z FC4 (Posterior Covariance) jako hidden state pro další krok.
+        # For Sigma we take the OUTPUT of FC4 (Posterior Covariance) as the hidden state for the next step.
         h_new_Sigma = out_FC4.unsqueeze(0) # [1, B, m*m]
 
-        # K a nové stavy pro další krok TBPTT
+        # K and new states for the next TBPTT step
         return K_vec, h_new_Q, h_new_Sigma, h_new_S
 
 
     def init_hidden_states(self, batch_size, prior_Q=None, prior_Sigma=None, prior_S=None):
         """
-        Inicializuje skryté stavy GRU na základě fyzikálních priorů (Q, P0, R).
-        Toto umožňuje síti začít s dobrou představou o neurčitostech.
+        Initializes GRU hidden states based on physical priors (Q, P0, R).
+        This allows the network to start with a good notion of uncertainties.
         
         Args:
-            batch_size (int): Velikost dávky.
-            prior_Q (Tensor, volitelný): Matice šumu procesu Q [m, m].
-            prior_Sigma (Tensor, volitelný): Počáteční kovariance P0 [m, m].
-            prior_S (Tensor, volitelný): Matice šumu měření R [n, n] (jako odhad S).
+            batch_size (int): Batch size.
+            prior_Q (Tensor, optional): Process noise matrix Q [m, m].
+            prior_Sigma (Tensor, optional): Initial covariance P0 [m, m].
+            prior_S (Tensor, optional): Measurement noise matrix R [n, n] (as estimate S).
         
         Returns:
-            Tuple[Tensor, Tensor, Tensor]: Inicializované hidden states pro Q, Sigma, S.
+            Tuple[Tensor, Tensor, Tensor]: Initialized hidden states for Q, Sigma, S.
         """
         if prior_Q is None: 
             prior_Q = torch.eye(self.state_dim, device=self.device)

@@ -36,7 +36,7 @@ class KalmanFormer(nn.Module):
         self.init_weights()
 
     def reset(self, batch_size=1, initial_state=None):
-        """Inicializuje stavy pro novou sekvenci (dávku)."""
+        """Initializes states for a new sequence (batch)."""
         if initial_state is None:
             initial_state = torch.zeros(batch_size, self.state_dim, device=self.device)
         else:
@@ -51,7 +51,7 @@ class KalmanFormer(nn.Module):
 
     def step(self, y_t_raw):
         """
-        Provede jeden kompletní krok KalmanFormer filtru (predikce + korekce) v čase 't'.
+        Performs one complete KalmanFormer step (prediction + correction) at time 't'.
         """
         y_t_raw = y_t_raw.to(self.device) # [B, n]
         batch_size = y_t_raw.shape[0]
@@ -62,11 +62,11 @@ class KalmanFormer(nn.Module):
         innovation_raw = y_t_raw - y_pred_raw
         innovation_safe = innovation_raw
         
-        # F1: Rozdíl pozorování
+        # F1: Observation difference
         obs_diff = y_t_raw - self.y_prev
         # F2: Inovace 
         innovation = innovation_safe
-        # F3: Rozdíl posterior odhadů
+        # F3: Difference of posterior estimates
         fw_evol_diff = self.x_filtered_prev - self.x_filtered_prev_prev
         # F4: Rozdíl (update)
         fw_update_diff = self.x_filtered_prev - self.x_pred_prev
@@ -87,7 +87,7 @@ class KalmanFormer(nn.Module):
         )
         
         if not torch.all(torch.isfinite(K_vec)):
-            self._log_and_raise("K_vec (výstup DNN)", locals())
+            self._log_and_raise("K_vec (DNN output)", locals())
 
         K = K_vec.reshape(batch_size, self.state_dim, self.obs_dim)
         
@@ -97,7 +97,7 @@ class KalmanFormer(nn.Module):
 
         x_filtered_raw = x_pred_raw + correction 
         if not torch.all(torch.isfinite(x_filtered_raw)):
-            self._log_and_raise("x_filtered_raw (finální stav)", locals())
+            self._log_and_raise("x_filtered_raw (final state)", locals())
 
         self.x_filtered_prev_prev = self.x_filtered_prev.clone() 
         self.x_pred_prev = x_pred_raw.clone()         
@@ -121,7 +121,7 @@ class KalmanFormer(nn.Module):
                         init.zeros_(param)
 
     def _detach(self):
-        """Odpojí všechny stavy přenášené mezi TBPTT okny."""
+        """Detach all states carried across TBPTT windows."""
         self.y_prev = self.y_prev.detach()
         self.x_filtered_prev = self.x_filtered_prev.detach()
         self.x_filtered_prev_prev = self.x_filtered_prev_prev.detach()
@@ -129,16 +129,16 @@ class KalmanFormer(nn.Module):
 
     def _log_and_raise(self, failed_tensor_name, local_vars):
         """
-        Helper metoda pro vypsání kompletního stavu při selhání.
-        Nyní vypisuje pouze prvních 'max_elements' prvků z dávky pro čitelnost.
+        Helper to print complete state on failure.
+        Prints only the first 'max_elements' items from the batch for readability.
         """
-        print(f"\n{'!'*40} SELHÁNÍ DETEKOVÁNO {'!'*40}")
-        print(f"Příčina: Tensor '{failed_tensor_name}' obsahuje NaN nebo Inf.")
+        print(f"\n{'!'*40} FAILURE DETECTED {'!'*40}")
+        print(f"Cause: Tensor '{failed_tensor_name}' contains NaN or Inf.")
         print(f"{'='*100}")
         
         max_elements = 4
         try:
-            failed_value = local_vars.get(failed_tensor_name, "NELZE ZÍSKAT HODNOTU")
+            failed_value = local_vars.get(failed_tensor_name, "CANNOT GET VALUE")
             
             display_str = ""
             if isinstance(failed_value, torch.Tensor):
@@ -146,15 +146,15 @@ class KalmanFormer(nn.Module):
                 display_size = min(max_elements, batch_size)
                 display_str = f"{failed_value[0:display_size]}"
                 if batch_size > display_size:
-                    display_str += f"\n... (zobrazeno prvních {display_size} z {batch_size} prvků)"
+                    display_str += f"\n... (showing first {display_size} of {batch_size} items)"
             else:
                 display_str = str(failed_value)
                 
-            print(f"Hodnota selhaného tensoru [{failed_tensor_name}]:\n{display_str}\n")
+            print(f"Failed tensor value [{failed_tensor_name}]:\n{display_str}\n")
         except Exception as e:
-            print(f"Nepodařilo se vypsat hodnotu selhaného tensoru: {e}\n")
+            print(f"Failed to print tensor value: {e}\n")
 
-        print(f"{'-'*40} KOMPLETNÍ STAV V OKAMŽIKU SELHÁNÍ {'-'*40}")
+        print(f"{'-'*40} COMPLETE STATE AT FAILURE {'-'*40}")
         
         vars_to_log = [
             'y_t_raw', 
@@ -171,10 +171,10 @@ class KalmanFormer(nn.Module):
             source = ""
             if var_name in local_vars:
                 value = local_vars[var_name]
-                source = "(lokální)"
+                source = "(local)"
             elif hasattr(self, var_name.split('.')[-1]):
                 value = getattr(self, var_name.split('.')[-1])
-                source = "(ze self)"
+                source = "(from self)"
             
             if value is not None:
                 try:
@@ -192,15 +192,15 @@ class KalmanFormer(nn.Module):
                     else:
                         display_str = str(value)
 
-                    print(f"Hodnota: {display_str}")
+                    print(f"Value: {display_str}")
                     print(f"Shape: {value.shape if hasattr(value, 'shape') else 'N/A'}")
-                    print(f"Obsahuje NaN: {torch.any(torch.isnan(value)) if isinstance(value, torch.Tensor) else 'N/A'}")
-                    print(f"Obsahuje Inf: {torch.any(torch.isinf(value)) if isinstance(value, torch.Tensor) else 'N/A'}\n")
+                    print(f"Contains NaN: {torch.any(torch.isnan(value)) if isinstance(value, torch.Tensor) else 'N/A'}")
+                    print(f"Contains Inf: {torch.any(torch.isinf(value)) if isinstance(value, torch.Tensor) else 'N/A'}\n")
                 
                 except Exception as e:
                     print(f"--- {var_name} {source} ---")
-                    print(f"Nelze vypsat hodnotu: {e}\n")
+                    print(f"Cannot print value: {e}\n")
             
         print(f"{'='*100}")
         
-        raise RuntimeError(f"Selhání: Tensor '{failed_tensor_name}' je NaN nebo Inf! (Viz log výše)")
+        raise RuntimeError(f"Failure: Tensor '{failed_tensor_name}' is NaN or Inf! (See log above)")

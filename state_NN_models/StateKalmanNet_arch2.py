@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as func
 import torch.nn.init as init
-# Důležité: Importujte novou DNN třídu
+# Important: Import the new DNN class
 from .DNN_KalmanNet_arch2 import DNN_KalmanNet_arch2 
 from copy import deepcopy
 
@@ -26,7 +26,7 @@ class StateKalmanNet_arch2(nn.Module):
             output_layer_multiplier=output_layer_multiplier
         ).to(device)
 
-        # Předchozí stavy pro výpočet features
+        # Previous states for feature computation
         self.y_prev = None                  
         self.x_filtered_prev = None     
         self.x_filtered_prev_prev = None  
@@ -39,7 +39,7 @@ class StateKalmanNet_arch2(nn.Module):
         self.init_weights()
 
     def reset(self, batch_size=1, initial_state=None):
-        """Inicializuje stavy pro novou sekvenci (dávku)."""
+        """Initialize states for a new sequence (batch)."""
         if initial_state is None:
             initial_state = torch.zeros(batch_size, self.state_dim, device=self.device)
         else:
@@ -54,7 +54,7 @@ class StateKalmanNet_arch2(nn.Module):
         h_Q_init, h_Sigma_init, h_S_init = self.dnn.init_hidden_states(
             batch_size,
             prior_Q=self.system_model.Q,      # Matice Q z modelu
-            prior_Sigma=self.system_model.P0, # Počáteční kovariance P0
+            prior_Sigma=self.system_model.P0, # Initial covariance P0
             prior_S=self.system_model.R       # Matice R z modelu
         )
         
@@ -64,7 +64,7 @@ class StateKalmanNet_arch2(nn.Module):
 
     def step(self, y_t_raw):
         """
-        Provede jeden kompletní krok (Architektura #2).
+        Perform one complete step (Architecture #2).
         """
         y_t_raw = y_t_raw.to(self.device) # [B, n]
         batch_size = y_t_raw.shape[0]
@@ -72,27 +72,29 @@ class StateKalmanNet_arch2(nn.Module):
         x_pred_raw = self.system_model.f(self.x_filtered_prev) # [B, m]
         y_pred_raw = self.system_model.h(x_pred_raw) # [B, n]
 
+        mx = 1e+8
+        x_pred_raw = torch.clip(x_pred_raw, max=mx, min=-mx)
         innovation_raw = y_t_raw - y_pred_raw
         
-        # --- Výpočet 4 features ---
+        # --- Compute 4 features ---
         obs_diff = y_t_raw - self.y_prev
         innovation = innovation_raw
         fw_evol_diff = self.x_filtered_prev - self.x_filtered_prev_prev
         fw_update_diff = self.x_filtered_prev - self.x_pred_prev
 
-        # norm_obs_diff = func.normalize(obs_diff, p=2, dim=1, eps=1e-12)
-        # norm_innovation = func.normalize(innovation, p=2, dim=1, eps=1e-12)
-        # norm_fw_evol_diff = func.normalize(fw_evol_diff, p=2, dim=1, eps=1e-12)
-        # norm_fw_update_diff = func.normalize(fw_update_diff, p=2, dim=1, eps=1e-12) 
-        norm_obs_diff = obs_diff
-        norm_innovation = innovation
-        norm_fw_evol_diff = fw_evol_diff
-        norm_fw_update_diff = fw_update_diff
+        norm_obs_diff = func.normalize(obs_diff, p=2, dim=1, eps=1e-12)
+        norm_innovation = func.normalize(innovation, p=2, dim=1, eps=1e-12)
+        norm_fw_evol_diff = func.normalize(fw_evol_diff, p=2, dim=1, eps=1e-12)
+        norm_fw_update_diff = func.normalize(fw_update_diff, p=2, dim=1, eps=1e-12) 
+        # norm_obs_diff = obs_diff
+        # norm_innovation = innovation
+        # norm_fw_evol_diff = fw_evol_diff
+        # norm_fw_update_diff = fw_update_diff
 
         if not torch.all(torch.isfinite(self.h_prev_Q)) or \
            not torch.all(torch.isfinite(self.h_prev_Sigma)) or \
            not torch.all(torch.isfinite(self.h_prev_S)):
-            self._log_and_raise("Jeden ze skrytých stavů (h_prev_*) je NaN/Inf", locals())
+            self._log_and_raise("One of the hidden states (h_prev_*) is NaN/Inf", locals())
 
         if not torch.all(torch.isfinite(norm_innovation)):
             self._log_and_raise("norm_innovation (vstup GRU)", locals())
@@ -109,7 +111,7 @@ class StateKalmanNet_arch2(nn.Module):
         )
         
         if not torch.all(torch.isfinite(K_vec)):
-            self._log_and_raise("K_vec (výstup DNN)", locals())
+            self._log_and_raise("K_vec (DNN output)", locals())
         
 
         K = K_vec.reshape(batch_size, self.state_dim, self.obs_dim)
@@ -120,7 +122,7 @@ class StateKalmanNet_arch2(nn.Module):
 
         x_filtered_raw = x_pred_raw + correction 
         if not torch.all(torch.isfinite(x_filtered_raw)):
-            self._log_and_raise("x_filtered_raw (finální stav)", locals())
+            self._log_and_raise("x_filtered_raw (final state)", locals())
 
 
         self.x_filtered_prev_prev = self.x_filtered_prev.clone() 
@@ -151,7 +153,7 @@ class StateKalmanNet_arch2(nn.Module):
                         param.data.fill_(0)
 
     def _detach(self):
-        """Odpojí všechny stavy přenášené mezi TBPTT okny."""
+        """Detach all states carried across TBPTT windows."""
         self.h_prev_Q = self.h_prev_Q.detach()
         self.h_prev_Sigma = self.h_prev_Sigma.detach()
         self.h_prev_S = self.h_prev_S.detach()
@@ -163,16 +165,16 @@ class StateKalmanNet_arch2(nn.Module):
 
     def _log_and_raise(self, failed_tensor_name, local_vars):
         """
-        Helper metoda pro vypsání kompletního stavu při selhání.
+        Helper method to print the full state on failure.
         """
-        print(f"\n{'!'*40} SELHÁNÍ DETEKOVÁNO {'!'*40}")
-        print(f"Příčina: Tensor '{failed_tensor_name}' obsahuje NaN nebo Inf.")
+        print(f"\n{'!'*40} FAILURE DETECTED {'!'*40}")
+        print(f"Cause: Tensor '{failed_tensor_name}' contains NaN or Inf.")
         print(f"{'='*100}")
         
         max_elements = 4 
         
         try:
-            failed_value = local_vars.get(failed_tensor_name, "NELZE ZÍSKAT HODNOTU")
+            failed_value = local_vars.get(failed_tensor_name, "CANNOT RETRIEVE VALUE")
             display_str = ""
             if isinstance(failed_value, torch.Tensor):
                 batch_size = failed_value.shape[0] if failed_value.dim() > 0 else 1
@@ -182,11 +184,11 @@ class StateKalmanNet_arch2(nn.Module):
                     display_str += f"\n... (zobrazeno prvních {display_size} z {batch_size} prvků)"
             else:
                 display_str = str(failed_value)
-            print(f"Hodnota selhaného tensoru [{failed_tensor_name}]:\n{display_str}\n")
+            print(f"Value of failed tensor [{failed_tensor_name}]:\n{display_str}\n")
         except Exception as e:
-            print(f"Nepodařilo se vypsat hodnotu selhaného tensoru: {e}\n")
+            print(f"Failed to print value of failed tensor: {e}\n")
 
-        print(f"{'-'*40} KOMPLETNÍ STAV V OKAMŽIKU SELHÁNÍ {'-'*40}")
+        print(f"{'-'*40} COMPLETE STATE AT FAILURE {'-'*40}")
         
         vars_to_log = [
             'y_t_raw', 
@@ -203,10 +205,10 @@ class StateKalmanNet_arch2(nn.Module):
             source = ""
             if var_name in local_vars:
                 value = local_vars[var_name]
-                source = "(lokální)"
+                source = "(local)"
             elif hasattr(self, var_name.split('.')[-1]):
                 value = getattr(self, var_name.split('.')[-1])
-                source = "(ze self)"
+                source = "(from self)"
             
             if value is not None:
                 try:
@@ -221,14 +223,14 @@ class StateKalmanNet_arch2(nn.Module):
                             display_str += f"\n... (zobrazeno prvních {display_size} z {batch_size} prvků)"
                     else:
                         display_str = str(value)
-                    print(f"Hodnota: {display_str}")
+                    print(f"Value: {display_str}")
                     print(f"Shape: {value.shape if hasattr(value, 'shape') else 'N/A'}")
-                    print(f"Obsahuje NaN: {torch.any(torch.isnan(value)) if isinstance(value, torch.Tensor) else 'N/A'}")
-                    print(f"Obsahuje Inf: {torch.any(torch.isinf(value)) if isinstance(value, torch.Tensor) else 'N/A'}\n")
+                    print(f"Contains NaN: {torch.any(torch.isnan(value)) if isinstance(value, torch.Tensor) else 'N/A'}")
+                    print(f"Contains Inf: {torch.any(torch.isinf(value)) if isinstance(value, torch.Tensor) else 'N/A'}\n")
                 except Exception as e:
                     print(f"--- {var_name} {source} ---")
-                    print(f"Nelze vypsat hodnotu: {e}\n")
+                    print(f"Cannot print value: {e}\n")
             
         print(f"{'='*100}")
         
-        raise RuntimeError(f"Selhání: Tensor '{failed_tensor_name}' je NaN nebo Inf! (Viz log výše)")
+        raise RuntimeError(f"Failure: Tensor '{failed_tensor_name}' is NaN or Inf! (See log above)")

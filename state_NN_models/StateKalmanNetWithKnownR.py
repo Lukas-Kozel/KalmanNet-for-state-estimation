@@ -37,15 +37,15 @@ class StateKalmanNetWithKnownR(nn.Module):
 
     def step(self,y_t):
         """
-        Provede jeden kompletní krok filtrace pro jedno měření y_t s dimenzí batch_size.
+        Performs one complete filtering step for a single measurement y_t with batch_size dimension.
         """
 
         batch_size = y_t.shape[0]
 
-        # self.x_filtered_prev je již dávka [B, D_state], můžeme ji poslat přímo
+        # self.x_filtered_prev is already a batch [B, D_state], we can pass it directly
         x_predicted = self.system_model.f(self.x_filtered_prev)
 
-        # x_predicted je také dávka, můžeme ji poslat přímo
+        # x_predicted is also a batch, we can pass it directly
         y_predicted = self.system_model.h(x_predicted)
 
         innovation = y_t - y_predicted
@@ -66,7 +66,7 @@ class StateKalmanNetWithKnownR(nn.Module):
         P_filtered_list = []
         with torch.no_grad(): # pro jistotu vypnutí gradienty
             for i in range(batch_size):
-                K_i = K[i]  # Kalmanův zisk pro i-tý prvek v batche
+                K_i = K[i]  # Kalman gain for the i-th batch element
 
                 x_filtered_i = x_filtered[i]
 

@@ -2,61 +2,151 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+class CustomNorm(nn.Module):
+     def __init__(self, dim=-1):
+         super().__init__()
+         self.dim = dim
+     def forward(self, x):
+         x = x - x.mean(dim=self.dim, keepdims=True)
+         n = torch.sqrt(x.pow(2).sum(dim=self.dim, keepdims=True) + 1e-10)
+         x = x / n
+         return x
+
 class DNN_KalmanNet(nn.Module):
-    def __init__(self, system_model, hidden_size_multiplier=10):
-        super(DNN_KalmanNet, self).__init__()
-        
-        
-        self.state_dim = system_model.state_dim
-        self.obs_dim = system_model.obs_dim
+     def __init__(self, system_model, hidden_size_multiplier=10,
+output_layer_multiplier=4, num_gru_layers=1, gru_hidden_dim_multiplier=1):
+         super(DNN_KalmanNet, self).__init__()
 
-        hidden_dim = (self.state_dim**2 + self.obs_dim**2) * hidden_size_multiplier #  heuristická volba velikosti skryté vrstvy
-        input_dim = self.state_dim + self.obs_dim # vstup je dán jako vektor delta_x_prev a innovace
-        output_dim = self.state_dim * self.obs_dim # Výstupní dimenze odpovídá velikosti Kalmanova zisku ale jako vektor o jednom řádku
+         self.state_dim = system_model.state_dim
+         self.obs_dim = system_model.obs_dim
+         self.device = system_model.device
 
-        # Definice vrstev
-        self.input_layer = nn.Linear(input_dim, hidden_dim)
-        self.gru = nn.GRU(hidden_dim, hidden_dim)
-        self.output_layer = nn.Linear(hidden_dim, output_dim)
+         m = self.state_dim
+         n = self.obs_dim
+         # 4 vstupy: state_inno, inovation, diff_state, diff_obs
+         # (Rozměry: m, n, m, n)
+         self.input_dim = 2 * m + 2 * n
+
+         # 1st hidden layer (input)
+         # H1_KNet = (m + n) * 10 * 8
+         self.H1 = (m + n) * hidden_size_multiplier * 8
+
+         # GRU hidden state dimension
+         # hidden_dim = (m^2 + n^2) * 10
+         self.gru_hidden_dim = (m*m + n*n) * gru_hidden_dim_multiplier
+
+         # 2nd hidden layer (output)
+         # H2_KNet = (m * n) * 1 * 4
+         self.H2 = (m * n) * output_layer_multiplier
+
+         # Output layer (vectorized gain)
+         self.output_dim = m * n
+
+         self.input_layer = nn.Sequential(
+             nn.Linear(self.input_dim, self.H1),
+            #  CustomNorm(),
+             #nn.Dropout(0.1),
+             nn.ReLU(),
+         ).to(self.device)
+
+         #self.input_repository = Repository(self.input_dim, self.H1)
+
+         #self.scale = Scale(self.input_dim)
+
+         self.gru = nn.GRU(
+             self.H1,                   # Input dimension from previous layer
+             self.gru_hidden_dim,       # Hidden state dimension
+             num_layers=num_gru_layers, # Number of layers
+             dropout=0.0,
+         ).to(self.device)
+
+         #self.passGRU = nn.Linear(self.H1,
+        # self.gru_hidden_dim).to(self.device)
+
+         self.output_hidden_layer = nn.Sequential(
+             #CustomNorm(),
+             #nn.Linear(self.gru_hidden_dim, self.output_dim),
+             nn.Linear(self.gru_hidden_dim, self.H2),
+             #nn.Dropout(0.1),
+             #CustomNorm(),
+             #nn.LayerNorm(self.H2),
+             nn.ReLU(),
+         ).to(self.device)
+
+         self.n_repository = 32
+
+         self.output_final_linear = nn.Sequential(
+             nn.Linear(self.H2, self.output_dim)
+             #nn.Linear(self.H2, self.n_repository),
+             #nn.Softmax(dim=-1),
+             #nn.Linear(self.n_repository, self.output_dim),
+         ).to(self.device)
 
 
-    def forward(self, nn_input, h_prev):
-        # nn_input: Vstupní tenzor zřetězených příznaků.
-        #           Tvar: [batch_size, state_dim+obs_dim]
-        
-        # h_prev: Skrytý stav GRU z předchozího časového kroku.
-        #         Tvar: [Num_Layers, batch_size, Hidden_Dim] (např. [1, 8, 120])
-        #         `Num_Layers` je počet GRU vrstev nad sebou, zde je 1.
-        
+     def forward(self, state_inno, inovation, diff_state, diff_obs, h_prev):
+         """
+         Performs the forward pass of the network.
 
-        # Vstupní vrstva + aktivace
-        # input_layer(nn_input) provede maticové násobení:
-        # [batch_size, state_dim + obs_dim] @ [state_dim + obs_dim, hidden_dim] -> [batch_size, hidden_dim]
-        activated_input = F.relu(self.input_layer(nn_input))
-        # `activated_input` Tvar: [batch_size, hidden_dim]
+         Inputs (all [batch_size, dim]):
+         - state_inno: Normalized predicted state (e.g., x_{t|t-1})
+         - inovation: Normalized innovation (F2: y_t - h(x_{t|t-1}))
+         - diff_state: Normalized state difference (F4: x_{t-1|t-1} - x_{t-1|t-2})
+         - diff_obs: Normalized observation difference (F1: y_t - y_{t-1})
+         - h_prev: GRU hidden state from previous step
+         """
 
-        # GRU očekává vstup ve formátu [Seq_Len, Batch_Size, Input_Dim].
-        # Proto musíme `activated_input` rozšířit o "sekvenční" dimenzi délky 1.
-        # .unsqueeze(0) přidá dimenzi na začátek:
-        # [batch_size, hidden_dim] -> [1, batch_size, hidden_dim]
+         #plt.plot(state_inno.detach().numpy(), label="state_inno")
+         #plt.plot(inovation.detach().numpy(), label="inovation")
+         #plt.plot(diff_state.detach().numpy(), label="diff_state")
+         #plt.plot(diff_obs.detach().numpy(), label="diff_obs")
+         #print(h_prev.detach().numpy())
+         #plt.legend()
+         #plt.show()
+         #raise Exception("stop")
 
-        # h_new: Finální skrytý stav po zpracování celé sekvence.
-        #        Tvar: [Num_Layers, batch_size, Hidden_Dim] (např. [1, 8, 120])
-        out_gru,h_new = self.gru(activated_input.unsqueeze(0), h_prev)
+         nn_input = torch.cat([state_inno, inovation, diff_state,diff_obs], dim=1)
 
-        # Výstupní vrstva
-        # `out_gru` má zbytečnou sekvenční dimenzi. Musíme ji odstranit,
-        # aby odpovídala vstupu pro `output_layer`.
-        # .squeeze(0) odstraní dimenzi 0:
-        # [1, batch_size, hidden_dim] -> [batch_size, hidden_dim]
-        squeezed_gru_out = out_gru.squeeze(0)
-        
-        # output_layer provede finální transformaci:
-        # [batch_size, hidden_dim] @ [hidden_dim, state_dim * obs_dim] -> [batch_size, state_dim * obs_dim]
-        out_output_layer = self.output_layer(squeezed_gru_out)
-        # `out_output_layer` Tvar: [batch_size, state_dim * obs_dim] (např. [8, 4])
-        # Toto je finální vektorizovaný Kalmanův zisk pro každý prvek v dávce.
+         if False:
+             mx = 10.0
+             nn_input = torch.clip(nn_input, min=-mx, max=mx)
 
-        # `h_new` Tvar: [Num_Layers, batch_size, Hidden_Dim] (např. [1, 8, 120])
-        # Tento tenzor se "schová" a použije se jako `h_prev` v příštím volání.
-        return out_output_layer, h_new
+         if False:
+             nn_input = torch.sign(nn_input) * torch.log(nn_input.abs() + 1.0)
+
+         #nn_input = self.input_repository(nn_input)
+
+         #nn_input = self.scale(nn_input)
+
+         activated_input = self.input_layer(nn_input)
+
+         #print(activated_input)
+
+         #activated_input = 1e-10 * activated_input
+
+         #activated_input = activated_input.tanh()
+
+         out_gru, h_new = self.gru(activated_input.unsqueeze(0), h_prev)
+         out_gru_squeezed = out_gru.squeeze(0)
+         h_new_squeezed = h_new.squeeze(0)
+
+         #h_new = h_prev
+         #out_gru_squeezed = self.passGRU(activated_input)
+
+         #print(out_gru_squeezed)
+         #print(h_new_squeezed)
+         #raise Exception("debug")
+
+         out_hidden = self.output_hidden_layer(out_gru_squeezed)
+         #out_hidden = self.output_hidden_layer(h_new_squeezed)
+         #out_hidden =self.output_hidden_layer(torch.cat([out_gru_squeezed, h_new_squeezed],dim=-1))
+
+         K_vec_raw = self.output_final_linear(out_hidden)
+
+         #K_vec_raw = torch.matmul(K_vec_raw, self.repository)
+
+         #K_vec_raw = self.foo.tile(K_vec_raw.size(0), 1)
+
+         #mx = 0.1
+         #K_vec_raw = torch.clip(K_vec_raw, max=mx, min=-mx)
+
+         return K_vec_raw, h_new

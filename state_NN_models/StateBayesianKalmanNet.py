@@ -25,36 +25,36 @@ class StateBayesianKalmanNet(nn.Module):
 
     def reset(self, batch_size=1, initial_state=None):
         if initial_state is not None:
-            # Počáteční stav pro t=0
+            # Initial state for t=0
             self.x_filtered_t_minus_1 = initial_state.detach().clone()
         else:
             self.x_filtered_t_minus_1 = torch.zeros(batch_size, self.state_dim, device=self.device)
         
-        # Pro t=1 budou rozdíly nulové, takže tyto stavy inicializujeme stejně
+        # For t=1 differences will be zero, so initialize these states the same
         self.x_filtered_t_minus_2 = self.x_filtered_t_minus_1.clone()
         
-        # Predikovaný stav pro t-1 (x_{t-1|t-2})
+        # Predicted state for t-1 (x_{t-1|t-2})
         x_pred_t_minus_1 = self.system_model.f(self.x_filtered_t_minus_2)
         self.x_pred_t_minus_1 = x_pred_t_minus_1.clone().detach()
         
-        # Měření pro t-1 (y_{t-1})
+        # Measurement for t-1 (y_{t-1})
         self.y_t_minus_1 = self.system_model.h(x_pred_t_minus_1).clone().detach()
 
-        # Skrytý stav pro GRU
+        # Hidden state for GRU
         self.h_prev = self.h_init_master.expand(-1, batch_size, -1).clone()
 
     def step(self, y_t):
-        # 1. PREDIKCE (pro aktuální čas t)
+        # 1. PREDICTION (for current time t)
         # x_{t|t-1} = f(x_{t-1|t-1})
         x_predicted = self.system_model.f(self.x_filtered_t_minus_1)
         # y_{t|t-1} = h(x_{t|t-1})
         y_predicted = self.system_model.h(x_predicted)
 
-        # Ošetření dimenzí
+        # Dimension handling
         if y_predicted.dim() == 1: y_predicted = y_predicted.unsqueeze(-1)
         if y_t.dim() == 1: y_t = y_t.unsqueeze(-1)
 
-        # 2. VÝPOČET VSTUPŮ PRO DNN
+        # 2. COMPUTE INPUTS FOR DNN
         # x_{t-1|t-1} - x_{t-1|t-2}
         state_inno = self.x_filtered_t_minus_1 - self.x_pred_t_minus_1
         # y_t - y_{t|t-1}
@@ -64,21 +64,21 @@ class StateBayesianKalmanNet(nn.Module):
         # y_t - y_{t-1}
         diff_obs = y_t - self.y_t_minus_1
 
-        # 3. PRŮCHOD SÍTÍ A KOREKCE
+        # 3. NETWORK FORWARD AND CORRECTION
         K_vec, h_new, regs = self.dnn(state_inno, inovation, diff_state, diff_obs, self.h_prev)
         
         K = K_vec.reshape(-1, self.state_dim, self.obs_dim)
         correction = torch.bmm(K, inovation.unsqueeze(-1)).squeeze(-1)
         x_filtered_unclamped = x_predicted + correction
         
-        # --- BLOK PRO OMEZENÍ STAVU (CLAMPING) ---
+        # --- STATE CLAMPING BLOCK ---
         px_clamped = x_filtered_unclamped[:, 0].clamp(self.system_model.min_x, self.system_model.max_x)
         py_clamped = x_filtered_unclamped[:, 1].clamp(self.system_model.min_y, self.system_model.max_y)
-        max_vel = 100.0 # Nebo jiná rozumná hodnota
+        max_vel = 100.0 # Or another reasonable value
         vx_clamped = x_filtered_unclamped[:, 2].clamp(-max_vel, max_vel)
         vy_clamped = x_filtered_unclamped[:, 3].clamp(-max_vel, max_vel)
 
-        # Logování (volitelné)
+        # Logging (optional)
         # if torch.any((vx_clamped == max_vel) | (vx_clamped == -max_vel)):
         #     print(f"Varování: Došlo k omezení rychlosti v ose X (max_vel={max_vel}).")
         # if torch.any((vy_clamped == max_vel) | (vy_clamped == -max_vel)):

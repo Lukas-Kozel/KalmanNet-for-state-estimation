@@ -15,7 +15,7 @@ class DNN_BayesianKalmanNet(nn.Module):
         self.H1 = (self.state_dim + self.obs_dim) * hidden_size_multiplier * 8
         self.H2 = (self.state_dim * self.obs_dim) * output_layer_multiplier * 1
 
-        # Přidání LayerNorm pro stabilizaci vstupů
+        # Add LayerNorm to stabilize inputs
         self.input_norm = nn.LayerNorm(self.input_dim)
 
         self.input_layer = nn.Sequential(
@@ -42,7 +42,7 @@ class DNN_BayesianKalmanNet(nn.Module):
         # Aplikace normalizace
         normalized_input = self.input_norm(nn_input)
 
-        # Dropout se aplikuje na normalizovaná data
+        # Apply dropout on normalized data
         activated_input, reg1 = self.concrete_dropout1(normalized_input, self.input_layer)
 
         out_gru, h_new = self.gru(activated_input.unsqueeze(0), h_prev)
@@ -58,8 +58,8 @@ class DNN_BayesianKalmanNet(nn.Module):
 class ConcreteDropout(nn.Module):
     def __init__(self, weight_regularizer=1e-6, dropout_regularizer=1e-6, init_min=0.5, init_max=0.8,device=None):
         """
-        weight_regularizer: váha regularizace vah - ve článku je to l^2
-        dropout_regularizer: váha regularizace dropout pravděpodobnosti - ve článku je to K
+        weight_regularizer: weight regularization coefficient (paper uses l^2)
+        dropout_regularizer: dropout probability regularization coefficient (paper uses K)
         """
         super(ConcreteDropout, self).__init__()
         # self.device = device
