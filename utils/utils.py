@@ -112,7 +112,7 @@ def generate_data_for_map(system, num_trajectories, seq_len,force_initial_state_
             # Training mode: force start at local origin
             x_current = torch.tensor([[0.0, 0.0, 0.0, 0.0]], device=device)
         else:
-            x_current = system.get_initial_state().view(1, -1)
+            x_current = system.get_deterministic_initial_state().view(1, -1)
 
         # If the start point is outside (should not happen if the map is properly shifted), clamp it
         x_current[0, 0] = x_current[0, 0].clamp(min_x, max_x)
