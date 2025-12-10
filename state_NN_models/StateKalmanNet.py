@@ -69,7 +69,6 @@ class StateKalmanNet(nn.Module):
 
         x_pred_raw = self.system_model.f(self.x_filtered_prev) # [B, m]
         y_pred_raw = self.system_model.h(x_pred_raw) # [B, n]
-        
 
         # mx = 1e+8
         # x_pred_raw = torch.clip(x_pred_raw, max=mx, min=-mx)
@@ -85,10 +84,15 @@ class StateKalmanNet(nn.Module):
         # F4: Rozdíl (update)
         fw_update_diff = self.x_filtered_prev - self.x_pred_prev
 
-        norm_obs_diff = func.normalize(obs_diff, p=2, dim=1, eps=1e-12)
-        norm_innovation = func.normalize(innovation, p=2, dim=1, eps=1e-12)
-        norm_fw_evol_diff = func.normalize(fw_evol_diff, p=2, dim=1, eps=1e-12)
-        norm_fw_update_diff = func.normalize(fw_update_diff, p=2, dim=1, eps=1e-12)
+        # norm_obs_diff = func.normalize(obs_diff, p=2, dim=1, eps=1e-12)
+        # norm_innovation = func.normalize(innovation, p=2, dim=1, eps=1e-12)
+        # norm_fw_evol_diff = func.normalize(fw_evol_diff, p=2, dim=1, eps=1e-12)
+        # norm_fw_update_diff = func.normalize(fw_update_diff, p=2, dim=1, eps=1e-12)
+
+        norm_obs_diff = torch.sign(obs_diff) * torch.log1p(torch.abs(obs_diff))
+        norm_innovation = torch.sign(innovation) * torch.log1p(torch.abs(innovation))
+        norm_fw_evol_diff = torch.sign(fw_evol_diff) * torch.log1p(torch.abs(fw_evol_diff))
+        norm_fw_update_diff = torch.sign(fw_update_diff) * torch.log1p(torch.abs(fw_update_diff))
 
         if not torch.all(torch.isfinite(self.h_prev)):
             self._log_and_raise("self.h_prev (GRU input)", locals())
@@ -118,12 +122,33 @@ class StateKalmanNet(nn.Module):
         if not torch.all(torch.isfinite(x_filtered_raw)):
             self._log_and_raise("x_filtered_raw (final state)", locals())
 
+        x_filtered_unclamped = x_pred_raw + correction
+         
+        # ==================================================================
+        # --- !!! SAFETY CLAMP (OPRAVENÁ VERZE - OUT OF PLACE) !!! ---
+        # ==================================================================
+        # Místo x_filtered[:, 0] = ... musíme vytvořit nové proměnné a pak je spojit.
+        
+        px = torch.clamp(x_filtered_unclamped[:, 0], self.system_model.min_x, self.system_model.max_x)
+        py = torch.clamp(x_filtered_unclamped[:, 1], self.system_model.min_y, self.system_model.max_y)
+        vx = torch.clamp(x_filtered_unclamped[:, 2], -50.0, 50.0)
+        vy = torch.clamp(x_filtered_unclamped[:, 3], -50.0, 50.0)
+        
+        # Vytvoříme NOVÝ tenzor (tím nerozbijeme graf pro autograd)
+        x_filtered_raw = torch.stack([px, py, vx, vy], dim=1)
+        
         self.x_filtered_prev_prev = self.x_filtered_prev.clone() 
         self.x_pred_prev = x_pred_raw.clone()         
         self.x_filtered_prev = x_filtered_raw.clone()      
         self.y_prev = y_t_raw.clone()                    
         self.h_prev = h_new                            
         
+        k_height_influence = torch.mean(torch.abs(K[:, :, 0])) # Vliv výšky
+        k_velocity_influence = torch.mean(torch.abs(K[:, :, 1:])) # Vliv rychlosti
+
+        # print(f"K gain (Height): {k_height_influence:.5f} | K gain (Velocity): {k_velocity_influence:.5f}")
+                # Uvnitř StateKalmanNet.step(), těsně před return:
+
         return x_filtered_raw
 
     def init_weights(self) -> None:

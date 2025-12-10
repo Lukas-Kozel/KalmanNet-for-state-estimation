@@ -89,11 +89,14 @@ def generate_data(system, num_trajectories, seq_len):
 
 def generate_data_for_map(system, num_trajectories, seq_len,force_initial_state_zero=False):
     device = system.Ex0.device
+
+    MAX_VELOCITY = 42.0 # Simply to avoid outliers during data generation
     
     # Get map boundaries from the system model
     min_x, max_x = system.min_x, system.max_x
     min_y, max_y = system.min_y, system.max_y
     print(f"INFO: Data generator uses bounds X:[{min_x:.2f}-{max_x:.2f}], Y:[{min_y:.2f}-{max_y:.2f}]")
+    print(f"INFO: Velocity clamped to +/- {MAX_VELOCITY} m/s")
     print(f"INFO: Forced start at zero: {force_initial_state_zero}")
     x_data = torch.zeros(num_trajectories, seq_len, system.state_dim, device=device)
     y_data = torch.zeros(num_trajectories, seq_len, system.obs_dim, device=device)
@@ -117,6 +120,9 @@ def generate_data_for_map(system, num_trajectories, seq_len,force_initial_state_
         # If the start point is outside (should not happen if the map is properly shifted), clamp it
         x_current[0, 0] = x_current[0, 0].clamp(min_x, max_x)
         x_current[0, 1] = x_current[0, 1].clamp(min_y, max_y)
+
+        x_current[0, 2] = x_current[0, 2].clamp(-MAX_VELOCITY, MAX_VELOCITY)
+        x_current[0, 3] = x_current[0, 3].clamp(-MAX_VELOCITY, MAX_VELOCITY)
         for t in range(seq_len):
 
             px_curr, py_curr = x_current[0, 0].item(), x_current[0, 1].item()
@@ -136,6 +142,10 @@ def generate_data_for_map(system, num_trajectories, seq_len,force_initial_state_
 
             try:
                 x_current = system.step(x_current)
+
+                x_current[0, 2] = torch.clamp(x_current[0, 2], -MAX_VELOCITY, MAX_VELOCITY)
+                x_current[0, 3] = torch.clamp(x_current[0, 3], -MAX_VELOCITY, MAX_VELOCITY)
+                
             except Exception as e:
                 print(f"Error during system.step at step {t} for x_current={x_current}: {e}")
                 trajectory_is_valid = False
@@ -202,3 +212,111 @@ def calculate_anees(x_true_list, x_hat_list, P_hat_list):
             total_nees += torch.nanmean(nees_samples_run).item()
         
     return total_nees / num_runs if num_runs > 0 else 0.0
+def generate_data_for_map_safe(system, num_trajectories, seq_len, force_initial_state_zero=False):
+    device = system.Ex0.device
+    
+    # --- BEZPEČNOSTNÍ LIMITY ---
+    HARD_CLAMP_VELOCITY = 20.0  # Fyzikální limit simulace (aby to neexplodovalo)
+    SAFE_VELOCITY_LIMIT = 20.0  # Limit pro dataset (chceme jen "slušné" trajektorie)
+    MAX_HEIGHT_JUMP = 15.0     # Maximální změna výšky v jednom kroku (metry)
+    MAP_MARGIN = 50.0           # Minimální vzdálenost od kraje mapy (metry)
+    
+    # Hranice mapy s rezervou
+    safe_min_x = system.min_x + MAP_MARGIN
+    safe_max_x = system.max_x - MAP_MARGIN
+    safe_min_y = system.min_y + MAP_MARGIN
+    safe_max_y = system.max_y - MAP_MARGIN
+
+    print(f"INFO: Generating SAFE data.")
+    print(f"  -> Velocity Limit: < {SAFE_VELOCITY_LIMIT} m/s")
+    print(f"  -> Map Margin: {MAP_MARGIN} m")
+    
+    x_data = torch.zeros(num_trajectories, seq_len, system.state_dim, device=device)
+    y_data = torch.zeros(num_trajectories, seq_len, system.obs_dim, device=device)
+
+    generated_count = 0
+    total_attempts = 0
+    
+    # Vypočítáme interval pro logování bezpečně (min 1)
+    log_interval = max(1, num_trajectories // 10)
+
+    while generated_count < num_trajectories:
+        total_attempts += 1
+        
+        # Pomocné buffery pro jednu trajektorii
+        temp_x_traj = torch.zeros(seq_len, system.state_dim, device=device)
+        temp_y_traj = torch.zeros(seq_len, system.obs_dim, device=device)
+        
+        # 1. Inicializace
+        if force_initial_state_zero:
+            x_current = torch.tensor([[0.0, 0.0, 0.0, 0.0]], device=device)
+        else:
+            x_current = system.get_deterministic_initial_state().view(1, -1)
+            # Přidáme trochu náhody, aby každá trajektorie nebyla stejná
+            x_current += torch.randn_like(x_current) * 0.1 
+
+        # Kontrola startu (musí být bezpečně uvnitř mapy)
+        if not (safe_min_x <= x_current[0,0] <= safe_max_x and safe_min_y <= x_current[0,1] <= safe_max_y):
+            continue # Zkusit znovu
+
+        trajectory_is_valid = True
+        
+        for t in range(seq_len):
+            # A) Uložení stavu
+            temp_x_traj[t, :] = x_current.squeeze()
+            
+            # B) Měření
+            try:
+                y_current = system.measure(x_current)
+                temp_y_traj[t, :] = y_current.squeeze()
+            except:
+                trajectory_is_valid = False
+                break
+            
+            # --- FILTR 1: SKOKY V TERÉNU ---
+            # Pokud se výška změnila o víc než X metrů za 1 sekundu, je to "divný" terén
+            if t > 0:
+                h_diff = abs(temp_y_traj[t, 0] - temp_y_traj[t-1, 0])
+                if h_diff > MAX_HEIGHT_JUMP:
+                    trajectory_is_valid = False
+                    print(f"Discarding: Terrain jump {h_diff:.2f}m at step {t}")
+                    break
+
+            # C) Krok dynamiky
+            try:
+                x_current = system.step(x_current)
+                
+                # Hard Clamp (pro fyziku simulace)
+                x_current[0, 2] = torch.clamp(x_current[0, 2], -HARD_CLAMP_VELOCITY, HARD_CLAMP_VELOCITY)
+                x_current[0, 3] = torch.clamp(x_current[0, 3], -HARD_CLAMP_VELOCITY, HARD_CLAMP_VELOCITY)
+                
+            except:
+                trajectory_is_valid = False
+                break
+            
+            # --- FILTR 2: OKRAJE MAPY ---
+            px, py = x_current[0, 0].item(), x_current[0, 1].item()
+            if not (safe_min_x <= px <= safe_max_x and safe_min_y <= py <= safe_max_y):
+                trajectory_is_valid = False
+                print("Discarding: Out of safe map bounds")
+                break
+                
+            # --- FILTR 3: RYCHLOST ---
+            vx, vy = x_current[0, 2].item(), x_current[0, 3].item()
+            if abs(vx) > SAFE_VELOCITY_LIMIT or abs(vy) > SAFE_VELOCITY_LIMIT:
+                trajectory_is_valid = False
+                print(f"Discarding: High velocity {vx:.1f}, {vy:.1f}")
+                break
+
+        # Pokud trajektorie přežila všechny kontroly, uložíme ji
+        if trajectory_is_valid:
+            x_data[generated_count, :, :] = temp_x_traj
+            y_data[generated_count, :, :] = temp_y_traj
+            generated_count += 1
+            
+            # Zde používáme bezpečný interval
+            if generated_count % log_interval == 0:
+                print(f"  Generated {generated_count}/{num_trajectories} (Efficiency: {generated_count/total_attempts:.1%})")
+
+    print(f"Generation Complete. Total attempts: {total_attempts}. Efficiency: {num_trajectories/total_attempts:.1%}")
+    return x_data, y_data

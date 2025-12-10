@@ -62,7 +62,7 @@ class StateKalmanNet_arch2(nn.Module):
         self.h_prev_Sigma = h_Sigma_init
         self.h_prev_S = h_S_init
 
-    def step(self, y_t_raw):
+    def step(self, y_t_raw, u_t_raw=None):
         """
         Perform one complete step (Architecture #2).
         """
@@ -70,10 +70,14 @@ class StateKalmanNet_arch2(nn.Module):
         batch_size = y_t_raw.shape[0]
 
         x_pred_raw = self.system_model.f(self.x_filtered_prev) # [B, m]
+
+        if u_t_raw is not None:
+            u_t_raw = u_t_raw.to(self.device)
+            x_pred_raw = x_pred_raw + u_t_raw
+        # mx = 1e+8
+        # x_pred_raw = torch.clip(x_pred_raw, max=mx, min=-mx)
         y_pred_raw = self.system_model.h(x_pred_raw) # [B, n]
 
-        mx = 1e+8
-        x_pred_raw = torch.clip(x_pred_raw, max=mx, min=-mx)
         innovation_raw = y_t_raw - y_pred_raw
         
         # --- Compute 4 features ---

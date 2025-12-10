@@ -20,8 +20,8 @@ class DNN_KalmanNet_arch2(nn.Module):
 
         # --- GRU VRSTVY ---
         # 1. GRU pro Q (Process Noise)
-        self.d_input_Q = m * in_mult_KNet
-        self.d_hidden_Q = m * m
+        self.d_input_Q = m * in_mult_KNet 
+        self.d_hidden_Q = m * m 
         self.GRU_Q = nn.GRU(self.d_input_Q, self.d_hidden_Q)
 
         # 2. GRU pro Sigma (Covariance)
@@ -43,14 +43,14 @@ class DNN_KalmanNet_arch2(nn.Module):
         # FC2: Compute Kalman gain K (from Sigma and S)
         self.d_input_FC2 = self.d_hidden_S + self.d_hidden_Sigma
         self.d_output_FC2 = n * m
-        self.d_hidden_FC2 = self.d_input_FC2 * out_mult_KNet
+        self.d_hidden_FC2 = self.d_input_FC2 * out_mult_KNet * 13
         self.FC2 = nn.Sequential(
             nn.Linear(self.d_input_FC2, self.d_hidden_FC2), nn.ReLU(),
             nn.Linear(self.d_hidden_FC2, self.d_output_FC2))
 
         # FC3: Backward Flow (S + K)
         self.d_input_FC3 = self.d_hidden_S + self.d_output_FC2
-        self.d_output_FC3 = m * m
+        self.d_output_FC3 = m * m * 2
         self.FC3 = nn.Sequential(
             nn.Linear(self.d_input_FC3, self.d_output_FC3), nn.ReLU())
 

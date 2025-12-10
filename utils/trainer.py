@@ -580,7 +580,8 @@ def training_session_trajectory_with_gaussian_nll_training_fcn(
     }
 
 def train_state_KalmanNet(model, train_loader, val_loader, device, 
-                          epochs=100, lr=1e-3, clip_grad=10, early_stopping_patience=20, optimizer_type=torch.optim.AdamW,weight_decay=1e-5):
+                          epochs=100, lr=1e-3, clip_grad=10, early_stopping_patience=20, optimizer_type=torch.optim.AdamW,weight_decay=1e-5,
+                          print_gradient=False):
     """
     Universal training function for StateKalmanNet and StateKalmanNetWithKnownR.
     Automatically detects whether the model returns covariance and adapts accordingly.
@@ -638,7 +639,13 @@ def train_state_KalmanNet(model, train_loader, val_loader, device,
                 epoch_traces.append(avg_trace_batch)
 
             loss = criterion(predicted_trajectory, x_true_batch[:, 1:, :])
+            # diff = predicted_trajectory - x_true_batch[:, 1:, :]
+            # pos_loss = torch.mean(diff[:, :, :2]**2) # Pozice X, Y
+            # vel_loss = torch.mean(diff[:, :, 2:]**2) # Rychlost
+            # loss = 100.0 * pos_loss + 1.0 * vel_loss
             loss.backward()
+            if print_gradient:
+                print(f"gradient: {model.dnn.input_layer[0].weight.grad.abs().mean().item()}")
             if clip_grad > 0:
                 nn.utils.clip_grad_norm_(model.parameters(), clip_grad)
             optimizer.step()
