@@ -138,7 +138,6 @@ def read_ground_truth(data_dir, data_date):
     yaw = pose_gt[:, 5]
     
     return np.vstack((t, x, y, yaw)).T
-
 def preprocess_session(data_dir, data_date, use_rtk=False):
     print(f"Processing {data_date}...")
     
@@ -163,7 +162,9 @@ def preprocess_session(data_dir, data_date, use_rtk=False):
     t_end = ground_truth[-1, 0]
     t_grid = np.arange(t_start, t_end, dt)
     
-    filtered_gps_list = []
+    # Seznamy pro sběr dat
+    filtered_gps_list = [] # S NaNs (Tvoje původní - pro EKF)
+    gps_filled_list = []   # <--- NOVÉ: Bez NaNs (Nearest Neighbor - pro metriku autorů)
     imu_sensor_list = []
     filtered_wheel_list = []
     gt_list = []
@@ -171,6 +172,7 @@ def preprocess_session(data_dir, data_date, use_rtk=False):
     prev_gps_idx = -1
     prev_wheel_idx = -1
     
+    # Rozbalení dat pro rychlý přístup
     gps_t, gps_x, gps_y = gps_data[:, 0], gps_data[:, 1], gps_data[:, 2]
     imu_t, imu_ax, imu_ay, imu_w = imu_data[:, 0], imu_data[:, 1], imu_data[:, 2], imu_data[:, 3]
     eul_t, eul_h = euler_data[:, 0], euler_data[:, 1]
@@ -179,9 +181,11 @@ def preprocess_session(data_dir, data_date, use_rtk=False):
     
     x_est_init = np.array([x_true[0], y_true[0], 0, 0, theta_true[0], 0])
     
+    # Hlavní smyčka přes časovou mřížku
     for k in range(len(t_grid)):
         curr_t = t_grid[k]
         
+        # Najdi indexy nejbližších minulých měření
         idx_imu = find_nearest_index(imu_t, curr_t)
         idx_eul = find_nearest_index(eul_t, curr_t)
         idx_gps = find_nearest_index(gps_t, curr_t)
@@ -193,24 +197,36 @@ def preprocess_session(data_dir, data_date, use_rtk=False):
         omega = imu_w[idx_imu]
         theta = eul_h[idx_eul] 
         
+        # 1. IMU
         imu_sensor_list.append([ax, ay, theta, omega])
         
+        # 2. GPS - Dvě verze
+        
+        # Verze A: "Filtered" (s NaN) - pokud se index nezměnil, nemáme nová data
         if idx_gps != prev_gps_idx:
             filtered_gps_list.append([gps_x[idx_gps], gps_y[idx_gps]])
             prev_gps_idx = idx_gps
         else:
             filtered_gps_list.append([np.nan, np.nan])
+
+        # Verze B: "Authors" (Filled) - <--- NOVÉ
+        # Vždy vezmeme hodnotu na aktuálním indexu. Pokud data nepřišla,
+        # find_nearest_index vrátí stejný index jako minule -> držíme starou hodnotu.
+        gps_filled_list.append([gps_x[idx_gps], gps_y[idx_gps]])
             
+        # 3. Odometrie
         if idx_whl != prev_wheel_idx:
             filtered_wheel_list.append([whl_vl[idx_whl], whl_vr[idx_whl]])
             prev_wheel_idx = idx_whl
         else:
             filtered_wheel_list.append([np.nan, np.nan])
             
+        # 4. GT
         gt_list.append([x_true[idx_gt], y_true[idx_gt], theta_true[idx_gt]])
 
     processed_data = {
         'filtered_gps': torch.tensor(filtered_gps_list, dtype=torch.float32),
+        'gps': torch.tensor(gps_filled_list, dtype=torch.float32), # <--- NOVÝ KLÍČ
         'imu': torch.tensor(imu_sensor_list, dtype=torch.float32),
         'filtered_wheel': torch.tensor(filtered_wheel_list, dtype=torch.float32),
         'ground_truth': torch.tensor(gt_list, dtype=torch.float32),
