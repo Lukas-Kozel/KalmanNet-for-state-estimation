@@ -1,15 +1,21 @@
 import torch
 
 class UnscentedKalmanFilter:
-    def __init__(self, system_model):
+    def __init__(self, system_model, alpha=0.1, beta=2.0, kappa=0.0):
         """
-        Inicializace zjednodušeného, ale robustního a vektorizovaného UKF.
-        Tato verze nepoužívá parametry alpha, beta, kappa.
+        Robustní UKF pro NCLT s podporou vstupu u (control) a NaN měření.
+        
+        Args:
+            alpha: Rozptyl sigma bodů (0.1 - 1.0 je ok pro float32)
+            beta: Parametr pro prior (2.0 je optimální pro Gaussovské rozdělení)
+            kappa: Sekundární škálovací parametr (obvykle 0 nebo 3-n)
         """
         self.device = system_model.Q.device
         
         self.system = system_model
+        # f: (x, u) -> x_next (Musí umět zpracovat batch sigma bodů!)
         self.f = system_model.f
+        # h: (x) -> y (Musí umět zpracovat batch sigma bodů!)
         self.h = system_model.h
         
         self.Q = system_model.Q.clone().detach().to(self.device)
@@ -18,157 +24,172 @@ class UnscentedKalmanFilter:
         self.state_dim = self.Q.shape[0]
         self.obs_dim = self.R.shape[0]
         
+        # --- Nastavení parametrů Sigma bodů ---
+        self.alpha = alpha
+        self.beta = beta
+        self.kappa = kappa
+        
+        self.lam = self.alpha**2 * (self.state_dim + self.kappa) - self.state_dim
         self.n_sigma_points = 2 * self.state_dim + 1
-        self.weights = torch.full((self.n_sigma_points,), 1.0 / self.n_sigma_points, device=self.device)
+        
+        # Váhy (W_mean a W_cov)
+        self.Wm = torch.full((self.n_sigma_points,), 0.5 / (self.state_dim + self.lam), device=self.device)
+        self.Wc = self.Wm.clone()
+        
+        # První váha je speciální
+        self.Wm[0] = self.lam / (self.state_dim + self.lam)
+        self.Wc[0] = self.lam / (self.state_dim + self.lam) + (1 - self.alpha**2 + self.beta)
 
-        self.x_filtered_prev = None
-        self.P_filtered_prev = None
-
-        # Interní stav pro online použití: predikce pro aktuální krok
+        # Interní stavy
         self.x_predict_current = None
         self.P_predict_current = None
-
+        
+        # Inicializace
         self.reset(system_model.Ex0, system_model.P0)
 
     def reset(self, Ex0, P0):
-        """
-        Inicializuje nebo resetuje interní stav filtru pro online použití.
-        """
         self.x_predict_current = Ex0.clone().detach().reshape(self.state_dim, 1)
         self.P_predict_current = P0.clone().detach()
 
+    def _ensure_positive_definite(self, P):
+        """Vynutí symetrii a PD vlastnost matice P."""
+        P = 0.5 * (P + P.transpose(-1, -2))
+        jitter = 1e-6 * torch.eye(self.state_dim, device=self.device)
+        return P + jitter
 
-    def _get_sigma_points(self, x_mean, P):
-        """
-        Vypočítá sigma body na základě průměru a kovariance.
-        """
+    def _get_sigma_points(self, x, P):
+        """Generování sigma bodů pomocí Choleského rozkladu."""
+        # Pojistka pro stabilitu
+        P = self._ensure_positive_definite(P)
+        
         try:
-            # Přidání malého jitteru pro numerickou stabilitu
-            jitter = torch.eye(self.state_dim, device=self.device) * 1e-12
-            S = torch.linalg.cholesky(P + jitter, upper=False)
+            L = torch.linalg.cholesky(P)
         except torch.linalg.LinAlgError:
-            print("Cholesky selhal! Používám vlastní odmocninu matice.")
+            # Fallback: Eigendecomposition pokud Cholesky selže
             eigvals, eigvecs = torch.linalg.eigh(P)
-            S = eigvecs @ torch.diag(torch.sqrt(eigvals.clamp(min=0))) @ eigvecs.T
+            eigvals = torch.clamp(eigvals, min=1e-8)
+            L = eigvecs @ torch.diag(torch.sqrt(eigvals)) @ eigvecs.T
 
-        # scale = torch.sqrt(torch.tensor(self.state_dim, device=self.device, dtype=torch.float32))
-        n = self.state_dim
-        scale = torch.sqrt(torch.tensor((n * 2 + 1) / 2.0, device=self.device, dtype=torch.float32))
-        # Vytvoření sigma bodů (x_mean musí být sloupcový vektor [state_dim, 1])
-        sigma_points = x_mean.repeat(1, self.n_sigma_points)
-        sigma_points[:, 1:self.state_dim + 1] += scale * S
-        sigma_points[:, self.state_dim + 1:] -= scale * S
+        factor = torch.sqrt(torch.tensor(self.state_dim + self.lam, device=self.device))
         
-        return sigma_points
-
-    def predict_step(self, x_filtered, P_filtered, u_current=None):
-        # Krok 1: Výpočet sigma bodů (zůstává stejný)
-        # sigma_points má tvar [state_dim, n_sigma_points]
-        sigma_points = self._get_sigma_points(x_filtered, P_filtered)
+        sigma_points = torch.zeros((self.n_sigma_points, self.state_dim), device=self.device)
+        sigma_points[0] = x.squeeze()
         
-        # Krok 2: Propagace sigma bodů přes deterministickou část dynamiky 'f'
-        # self.f očekává dávku [batch_size, state_dim], proto musíme transponovat
-        # propagated_points má tvar [n_sigma_points, state_dim]
-        propagated_points_f = self.f(sigma_points.T)
+        for i in range(self.state_dim):
+            sigma_points[i + 1] = x.squeeze() + factor * L[:, i]
+            sigma_points[i + 1 + self.state_dim] = x.squeeze() - factor * L[:, i]
+            
+        return sigma_points # [2n+1, state_dim]
 
-        # ### ZDE JE KLÍČOVÁ OPRAVA ###
-        # Krok 3: Přičtení vstupu 'u' ke KAŽDÉMU propagovanému bodu
-        if u_current is not None:
-            # u_current má tvar [state_dim]. Rozšíříme ho, aby se dal sečíst s maticí.
-            # PyTorch se postará o broadcasting (rozšíření) u_current na všechny řádky.
-            propagated_points = propagated_points_f + u_current
+    def predict_step(self, x_curr, P_curr, u_curr=None):
+        """
+        Krok predikce (Time Update).
+        """
+        # 1. Generování Sigma bodů
+        sigma_points = self._get_sigma_points(x_curr, P_curr)
+        
+        # 2. Propagace bodů přes nelineární funkci f(x, u)
+        if u_curr is not None:
+            # Vstup u [Input_dim] -> [1, Input_dim] -> repeat -> [2n+1, Input_dim]
+            # Tím zajistíme, že f() dostane správný tvar pro batch processing
+            u_batch = u_curr.reshape(1, -1).repeat(self.n_sigma_points, 1)
+            propagated_sigmas = self.f(sigma_points, u_batch)
         else:
-            propagated_points = propagated_points_f
-
-        # Zpětná transpozice pro další výpočty
-        # propagated_points má nyní tvar [state_dim, n_sigma_points]
-        propagated_points = propagated_points.T
+            propagated_sigmas = self.f(sigma_points, None)
+            
+        # 3. Výpočet apriorního průměru x_pred
+        # Vážený součet sigma bodů
+        x_pred = torch.sum(self.Wm.unsqueeze(1) * propagated_sigmas, dim=0).reshape(self.state_dim, 1)
         
-        # Krok 4: Výpočet predikovaného stavu a kovariance (Unscented Transform)
-        # (Tato část je již správně)
-        x_predict = (propagated_points @ self.weights).unsqueeze(1)
-        diff = propagated_points - x_predict
-        P_predict = (diff * self.weights) @ diff.T + self.Q
-
-        return x_predict, P_predict
-
-    def update_step(self, x_predict, P_predict, y_t):
-        y_t = y_t.reshape(self.obs_dim, 1)
-
-        sigma_points = self._get_sigma_points(x_predict, P_predict)
-
-        measurement_points = self.h(sigma_points.T).T
+        # 4. Výpočet apriorní kovariance P_pred
+        diff = propagated_sigmas - x_pred.T
         
-        y_hat = (measurement_points @ self.weights).unsqueeze(1)
+        # POZNÁMKA: Zde by teoreticky mělo být ošetření úhlů (wrap_to_pi) pro rozdíly stavů,
+        # pokud sys_model obsahuje úhly (theta). Standardní odčítání může udělat chybu kolem +/- PI.
+        # Pro NCLT to obvykle projde, pokud se auto netočí extrémně rychle v jednom kroku.
         
-        y_diff = measurement_points - y_hat
-        x_diff = sigma_points - x_predict
+        P_pred = diff.T @ (torch.diag(self.Wc) @ diff) + self.Q
+        P_pred = self._ensure_positive_definite(P_pred)
         
-        P_yy = (y_diff * self.weights) @ y_diff.T + self.R
-        P_xy = (x_diff * self.weights) @ y_diff.T
-        
-        innovation = y_t - y_hat
-        K = P_xy @ torch.linalg.inv(P_yy)
-        
-        x_filtered = x_predict + K @ innovation
-        P_filtered = P_predict - K @ P_xy.T
-        
-        return x_filtered, P_filtered, K, innovation
+        return x_pred, P_pred
 
-
-    def step(self, y_t, u_t=None):
+    def update_step(self, x_pred, P_pred, y_meas):
         """
-        Provede jeden kompletní krok filtrace pro ONLINE použití.
-        Vrací nejlepší odhad pro aktuální čas 't'.
+        Krok korekce (Measurement Update).
+        Obsahuje NaN handling identický s EKF.
         """
-        x_filtered, P_filtered, _, _ = self.update_step(self.x_predict_current, self.P_predict_current, y_t)
+        # === HANDLING NaN (Výpadek GPS) ===
+        if torch.any(torch.isnan(y_meas)):
+            # Vracíme predikci beze změny (Skip Update)
+            # Nulová inovace a gain pro logování
+            return x_pred, P_pred, torch.zeros(self.state_dim, self.obs_dim, device=self.device), torch.zeros(self.obs_dim, device=self.device)
 
-        if u_t is not None:
-            x_predict_next, P_predict_next = self.predict_step(x_filtered, P_filtered, u_t)
-        else:
-            x_predict_next, P_predict_next = self.predict_step(x_filtered, P_filtered)
+        y_meas = y_meas.reshape(self.obs_dim, 1)
 
-        self.x_predict_current = x_predict_next
-        self.P_predict_current = P_predict_next
+        # 1. Znovu generujeme sigma body (z predikce)
+        # Některé varianty UKF používají staré body, ale standard je generovat nové z P_pred
+        sigma_points = self._get_sigma_points(x_pred, P_pred)
+        
+        # 2. Transformace sigma bodů do prostoru měření h(x)
+        meas_sigmas = self.h(sigma_points)
+        
+        # 3. Odhad měření y_hat (Vážený průměr)
+        y_hat = torch.sum(self.Wm.unsqueeze(1) * meas_sigmas, dim=0).reshape(self.obs_dim, 1)
+        
+        # 4. Kovariance měření (S) a křížová kovariance (P_xy)
+        y_diff = meas_sigmas - y_hat.T
+        x_diff = sigma_points - x_pred.T
+        
+        S = y_diff.T @ (torch.diag(self.Wc) @ y_diff) + self.R
+        P_xy = x_diff.T @ (torch.diag(self.Wc) @ y_diff)
+        
+        # 5. Výpočet Kalman Gain a Update
+        # Používáme pinv pro stabilitu
+        K = P_xy @ torch.linalg.pinv(S)
+        
+        innovation = y_meas - y_hat
+        x_new = x_pred + K @ innovation
+        
+        # P_new = P_pred - K * S * K'
+        P_new = P_pred - K @ S @ K.T
+        P_new = self._ensure_positive_definite(P_new)
+        
+        return x_new, P_new, K, innovation
 
-        return x_filtered, P_filtered
-    
-
-    def process_sequence(self, y_seq, u_sequence=None, Ex0=None, P0=None):
+    def process_sequence(self, y_seq, u_seq=None, Ex0=None, P0=None):
         """
-        Zpracuje celou sekvenci měření.
-        Tato metoda je nyní plně kompatibilní s vaším vyhodnocovacím skriptem.
+        Dávkové zpracování celé trajektorie.
+        Struktura: Loop { Update -> Save -> Predict }
         """
-        x_est = Ex0.clone().detach().reshape(self.state_dim, 1)
-        P_est = P0.clone().detach()
-
         seq_len = y_seq.shape[0]
-
-        x_filtered_history = torch.zeros(seq_len, self.state_dim, device=self.device)
-        P_filtered_history = torch.zeros(seq_len, self.state_dim, self.state_dim, device=self.device)
-        kalman_gain_history = torch.zeros(seq_len, self.state_dim, self.obs_dim, device=self.device)
-        innovation_history = torch.zeros(seq_len, self.obs_dim, device=self.device)
-
-        x_predict_k = Ex0.clone().detach().reshape(self.state_dim, 1)
-        P_predict_k = P0.clone().detach()
-
+        
+        x_hist = torch.zeros(seq_len, self.state_dim, device=self.device)
+        P_hist = torch.zeros(seq_len, self.state_dim, self.state_dim, device=self.device)
+        
+        # Inicializace
+        # Pokud nebylo zadáno Ex0, použijeme interní stav z minula (nebo reset)
+        if Ex0 is not None:
+            x_curr = Ex0.clone().detach().reshape(self.state_dim, 1)
+            P_curr = P0.clone().detach()
+        else:
+            x_curr = self.x_predict_current
+            P_curr = self.P_predict_current
+        
         for k in range(seq_len):
-            x_filtered, P_filtered, K, innovation = self.update_step(x_predict_k, P_predict_k, y_seq[k])
-
-            u_k = u_sequence[k, :] if u_sequence is not None else None
-            x_predict_k_plus_1, P_predict_k_plus_1 = self.predict_step(x_filtered, P_filtered,u_k)
-
-            x_predict_k = x_predict_k_plus_1
-            P_predict_k = P_predict_k_plus_1
-
-            x_filtered_history[k] = x_filtered.squeeze()
-            P_filtered_history[k] = P_filtered
-            kalman_gain_history[k] = K
-            innovation_history[k] = innovation.squeeze()
-
-        return {
-            'x_filtered': x_filtered_history,
-            'P_filtered': P_filtered_history,
-            'Kalman_gain': kalman_gain_history,
-            'innovation': innovation_history
-        }
+            # --- 1. UPDATE STEP (Korekce) ---
+            # Zkusíme opravit aktuální stav měřením (pokud není NaN)
+            x_upd, P_upd, _, _ = self.update_step(x_curr, P_curr, y_seq[k])
+            
+            # Uložíme výsledek (Posterior)
+            x_hist[k] = x_upd.squeeze()
+            P_hist[k] = P_upd
+            
+            # --- 2. PREDICT STEP (Posun do budoucna) ---
+            if k < seq_len - 1:
+                # Načtení vstupu u pro tento krok
+                u_k = u_seq[k] if u_seq is not None else None
+                
+                # Predikce x_{k+1|k}
+                x_curr, P_curr = self.predict_step(x_upd, P_upd, u_k)
+            
+        return {'x_filtered': x_hist, 'P_filtered': P_hist}
