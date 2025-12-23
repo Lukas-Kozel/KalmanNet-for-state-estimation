@@ -29,36 +29,70 @@ def store_model(model, path):
     print(f"Model saved to {path}")
 
 
-def calculate_anees_vectorized(x_true_tensor, x_hat_tensor, P_hat_tensor):
-    """
-    Vectorized ANEES computation.
-    Accepts single large tensors per dataset.
-    Input shape: [Num_Trajectories, Seq_Length, Dim]
-    """
-    if x_true_tensor.numel() == 0:
-        return float('nan')
+# def calculate_anees_vectorized(x_true_tensor, x_hat_tensor, P_hat_tensor):
+#     """
+#     Vectorized ANEES computation.
+#     Accepts single large tensors per dataset.
+#     Input shape: [Num_Trajectories, Seq_Length, Dim]
+#     """
+#     if x_true_tensor.numel() == 0:
+#         return float('nan')
 
-    if x_true_tensor.shape[:2] != x_hat_tensor.shape[:2] or x_true_tensor.shape[:2] != P_hat_tensor.shape[:2]:
-        print("ERROR: Tensors for ANEES do not have the same number of trajectories or sequence lengths!")
-        return float('nan')
+#     if x_true_tensor.shape[:2] != x_hat_tensor.shape[:2] or x_true_tensor.shape[:2] != P_hat_tensor.shape[:2]:
+#         print("ERROR: Tensors for ANEES do not have the same number of trajectories or sequence lengths!")
+#         return float('nan')
 
-    device = x_true_tensor.device
-    jitter = torch.eye(P_hat_tensor.shape[-1], device=device) * 1e-6
+#     device = x_true_tensor.device
+#     jitter = torch.eye(P_hat_tensor.shape[-1], device=device) * 1e-6
 
-    error = x_true_tensor[:, 1:, :] - x_hat_tensor[:, 1:, :]
-    P_hat_seq = P_hat_tensor[:, 1:, :, :]
+#     error = x_true_tensor[:, 1:, :] - x_hat_tensor[:, 1:, :]
+#     P_hat_seq = P_hat_tensor[:, 1:, :, :]
     
-    try:
-        P_inv_seq = torch.linalg.inv(P_hat_seq + jitter)  # Shape [N, T-1, D, D]
-        nees_tensor = (error.unsqueeze(-2) @ P_inv_seq @ error.unsqueeze(-1)).squeeze()  # Shape [N, T-1]
+#     try:
+#         P_inv_seq = torch.linalg.inv(P_hat_seq + jitter)  # Shape [N, T-1, D, D]
+#         nees_tensor = (error.unsqueeze(-2) @ P_inv_seq @ error.unsqueeze(-1)).squeeze()  # Shape [N, T-1]
 
-        avg_anees = torch.mean(nees_tensor).item()
+#         avg_anees = torch.mean(nees_tensor).item()
 
-        return avg_anees
+#         return avg_anees
 
-    except torch.linalg.LinAlgError:
-        print("WARNING: Matrix inversion failed during ANEES computation.")
-        return float('nan')
+
+#     except torch.linalg.LinAlgError:
+#         print("WARNING: Matrix inversion failed during ANEES computation.")
+#         return float('nan')
+    
+import torch
+import torch
+
+def calculate_anees_vectorized(x_true, x_hat, P_hat, eps=1e-6):
+    """
+    Robustní výpočet ANEES pomocí Pseudo-Inverze.
+    Zvládá i situaci, kdy J_samples < State_Dim (singulární matice).
+    """
+    # 1. Zploštění (Flattening)
+    if x_true.dim() == 3: x_true = x_true.reshape(-1, x_true.shape[-1])
+    if x_hat.dim() == 3: x_hat = x_hat.reshape(-1, x_hat.shape[-1])
+    if P_hat.dim() == 4: P_hat = P_hat.reshape(-1, P_hat.shape[-2], P_hat.shape[-1])
+
+    # 2. Výpočet chyby
+    error = (x_true - x_hat).unsqueeze(-1)  # [N, Dim, 1]
+    
+    # 3. Pseudo-Inverze matice P
+    # pinv je mnohem stabilnější pro Low-Rank matice (když máme málo vzorků)
+    # hermitian=True říká, že matice je symetrická (což kovariance je)
+    P_inv = torch.linalg.pinv(P_hat, hermitian=True)
+    
+    # 4. ANEES = error^T * P_inv * error
+    # bmm: [N, 1, Dim] @ [N, Dim, Dim] -> [N, 1, Dim]
+    #      [N, 1, Dim] @ [N, Dim, 1] -> [N, 1, 1]
+    
+    temp = torch.bmm(error.transpose(1, 2), P_inv)
+    anees_per_sample = torch.bmm(temp, error).squeeze() # [N]
+    
+    # Ochrana proti numerickým artefaktům (malinká záporná čísla jako -1e-10)
+    anees_per_sample = torch.clamp(anees_per_sample, min=0.0)
+
+    return anees_per_sample.mean().item()
     
 def generate_data(system, num_trajectories, seq_len):
     """
