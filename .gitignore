@@ -4,4 +4,3 @@ __pycache__/
 navigation NCLT dataset/data/
 navigation NCLT dataset/ground_truth/
 navigation NCLT dataset/ground_truth_cov/
-*.pth
