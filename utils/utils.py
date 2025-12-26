@@ -4,12 +4,8 @@ import numpy as np
 import torch.nn.functional as F
 from copy import deepcopy
 
-# =================================================================================
-# 1. POMOCNÉ FUNKCE
-# =================================================================================
-
-def generate_data(system, num_trajectories, seq_len):
-    """Generuje data (trajektorie) pro daný dynamický systém."""
+def generate_data_deterministic_init_state(system, num_trajectories, seq_len):
+    """Generate trajectories for the given dynamic system (deterministic init)."""
     device = system.Ex0.device
     x_data = torch.zeros(num_trajectories, seq_len, system.state_dim, device=device)
     y_data = torch.zeros(num_trajectories, seq_len, system.obs_dim, device=device)
@@ -28,68 +24,191 @@ def generate_data(system, num_trajectories, seq_len):
     return x_data, y_data
 
 def store_model(model, path):
-    """Uloží stav modelu do souboru."""
+    """Store model state to a file."""
     torch.save(model.state_dict(), path)
-    print(f"Model byl uložen do {path}")
+    print(f"Model saved to {path}")
 
 
-def calculate_anees_vectorized(x_true_tensor, x_hat_tensor, P_hat_tensor):
-    """
-    Vektorizovaná verze pro výpočet ANEES.
-    Přijímá jeden velký tenzor pro každou sadu dat.
-    Tvar vstupů: [Počet_Trajektorií, Délka_Sekvence, Dimenze]
-    """
-    if x_true_tensor.numel() == 0:
-        return float('nan')
+# def calculate_anees_vectorized(x_true_tensor, x_hat_tensor, P_hat_tensor):
+#     """
+#     Vectorized ANEES computation.
+#     Accepts single large tensors per dataset.
+#     Input shape: [Num_Trajectories, Seq_Length, Dim]
+#     """
+#     if x_true_tensor.numel() == 0:
+#         return float('nan')
 
-    if x_true_tensor.shape[:2] != x_hat_tensor.shape[:2] or x_true_tensor.shape[:2] != P_hat_tensor.shape[:2]:
-        print("!!! CHYBA: Tenzory pro ANEES nemají stejný počet trajektorií nebo délek sekvencí!")
-        return float('nan')
+#     if x_true_tensor.shape[:2] != x_hat_tensor.shape[:2] or x_true_tensor.shape[:2] != P_hat_tensor.shape[:2]:
+#         print("ERROR: Tensors for ANEES do not have the same number of trajectories or sequence lengths!")
+#         return float('nan')
 
-    device = x_true_tensor.device
-    jitter = torch.eye(P_hat_tensor.shape[-1], device=device) * 1e-6
+#     device = x_true_tensor.device
+#     jitter = torch.eye(P_hat_tensor.shape[-1], device=device) * 1e-6
 
-    error = x_true_tensor[:, 1:, :] - x_hat_tensor[:, 1:, :]
-    P_hat_seq = P_hat_tensor[:, 1:, :, :]
+#     error = x_true_tensor[:, 1:, :] - x_hat_tensor[:, 1:, :]
+#     P_hat_seq = P_hat_tensor[:, 1:, :, :]
     
-    try:
-        P_inv_seq = torch.linalg.inv(P_hat_seq + jitter) # Tvar [N, T-1, D, D]
-        nees_tensor = (error.unsqueeze(-2) @ P_inv_seq @ error.unsqueeze(-1)).squeeze() # Tvar [N, T-1]
-        
-        avg_anees = torch.mean(nees_tensor).item()
-        
-        return avg_anees
-        
-    except torch.linalg.LinAlgError:
-        print("!!! VAROVÁNÍ: Selhala inverze matice při výpočtu ANEES. !!!")
-        return float('nan')
+#     try:
+#         P_inv_seq = torch.linalg.inv(P_hat_seq + jitter)  # Shape [N, T-1, D, D]
+#         nees_tensor = (error.unsqueeze(-2) @ P_inv_seq @ error.unsqueeze(-1)).squeeze()  # Shape [N, T-1]
+
+#         avg_anees = torch.mean(nees_tensor).item()
+
+#         return avg_anees
+
+
+#     except torch.linalg.LinAlgError:
+#         print("WARNING: Matrix inversion failed during ANEES computation.")
+#         return float('nan')
     
-# Funkce pro generování dat
+import torch
+import torch
+
+def calculate_anees_vectorized(x_true, x_hat, P_hat, eps=1e-6):
+    """
+    Robustní výpočet ANEES pomocí Pseudo-Inverze.
+    Zvládá i situaci, kdy J_samples < State_Dim (singulární matice).
+    """
+    # 1. Zploštění (Flattening)
+    if x_true.dim() == 3: x_true = x_true.reshape(-1, x_true.shape[-1])
+    if x_hat.dim() == 3: x_hat = x_hat.reshape(-1, x_hat.shape[-1])
+    if P_hat.dim() == 4: P_hat = P_hat.reshape(-1, P_hat.shape[-2], P_hat.shape[-1])
+
+    # 2. Výpočet chyby
+    error = (x_true - x_hat).unsqueeze(-1)  # [N, Dim, 1]
+    
+    # 3. Pseudo-Inverze matice P
+    # pinv je mnohem stabilnější pro Low-Rank matice (když máme málo vzorků)
+    # hermitian=True říká, že matice je symetrická (což kovariance je)
+    P_inv = torch.linalg.pinv(P_hat, hermitian=True)
+    
+    # 4. ANEES = error^T * P_inv * error
+    # bmm: [N, 1, Dim] @ [N, Dim, Dim] -> [N, 1, Dim]
+    #      [N, 1, Dim] @ [N, Dim, 1] -> [N, 1, 1]
+    
+    temp = torch.bmm(error.transpose(1, 2), P_inv)
+    anees_per_sample = torch.bmm(temp, error).squeeze() # [N]
+    
+    # Ochrana proti numerickým artefaktům (malinká záporná čísla jako -1e-10)
+    anees_per_sample = torch.clamp(anees_per_sample, min=0.0)
+
+    return anees_per_sample.mean().item()
+    
 def generate_data(system, num_trajectories, seq_len):
+    """
+    Generate data in a fully vectorized manner.
+    """
+    device = system.device
 
-    # Zjištění zařízení, na kterém systém pracuje
+    x_data = torch.zeros(num_trajectories, seq_len, system.state_dim, device=device)
+    y_data = torch.zeros(num_trajectories, seq_len, system.obs_dim, device=device)
+
+    x_k = system.get_initial_state_batch(num_trajectories)
+    
+    y_k = system.measure(x_k)
+    
+    x_data[:, 0, :] = x_k
+    y_data[:, 0, :] = y_k
+    
+    with torch.no_grad():
+        for t in range(1, seq_len):
+            
+            x_k = system.step(x_k)
+            y_k = system.measure(x_k)
+            
+            x_data[:, t, :] = x_k
+            y_data[:, t, :] = y_k
+            
+    return x_data, y_data
+
+def generate_data_for_map(system, num_trajectories, seq_len,force_initial_state_zero=False):
     device = system.Ex0.device
 
-    x_data = torch.zeros(num_trajectories, seq_len, system.state_dim,device=device)
-    y_data = torch.zeros(num_trajectories, seq_len, system.obs_dim,device=device)
-    for i in range(num_trajectories):
-        x = system.get_initial_state()
+    MAX_VELOCITY = 42.0 # Simply to avoid outliers during data generation
+    
+    # Get map boundaries from the system model
+    min_x, max_x = system.min_x, system.max_x
+    min_y, max_y = system.min_y, system.max_y
+    print(f"INFO: Data generator uses bounds X:[{min_x:.2f}-{max_x:.2f}], Y:[{min_y:.2f}-{max_y:.2f}]")
+    print(f"INFO: Velocity clamped to +/- {MAX_VELOCITY} m/s")
+    print(f"INFO: Forced start at zero: {force_initial_state_zero}")
+    x_data = torch.zeros(num_trajectories, seq_len, system.state_dim, device=device)
+    y_data = torch.zeros(num_trajectories, seq_len, system.obs_dim, device=device)
+
+    generated_count = 0
+    total_attempts = 0
+    
+    while generated_count < num_trajectories:
+        total_attempts += 1
+        trajectory_is_valid = True
+        
+        temp_x_traj = torch.zeros(seq_len, system.state_dim, device=device)
+        temp_y_traj = torch.zeros(seq_len, system.obs_dim, device=device)
+        
+        if force_initial_state_zero:
+            # Training mode: force start at local origin
+            x_current = torch.tensor([[0.0, 0.0, 0.0, 0.0]], device=device)
+        else:
+            x_current = system.get_deterministic_initial_state().view(1, -1)
+
+        # If the start point is outside (should not happen if the map is properly shifted), clamp it
+        x_current[0, 0] = x_current[0, 0].clamp(min_x, max_x)
+        x_current[0, 1] = x_current[0, 1].clamp(min_y, max_y)
+
+        x_current[0, 2] = x_current[0, 2].clamp(-MAX_VELOCITY, MAX_VELOCITY)
+        x_current[0, 3] = x_current[0, 3].clamp(-MAX_VELOCITY, MAX_VELOCITY)
         for t in range(seq_len):
-            if t>0:
-                x = system.step(x)            
-            
-            y = system.measure(x)
-            x_data[i, t, :] = x.squeeze()
-            y_data[i, t, :] = y.squeeze()
+
+            px_curr, py_curr = x_current[0, 0].item(), x_current[0, 1].item()
+            if not (min_x <= px_curr <= max_x and min_y <= py_curr <= max_y):
+                trajectory_is_valid = False
+                break
+            # If the state is within the map, perform measurement and step
+            try:
+                y_current = system.measure(x_current)
+            except Exception as e:
+                print(f"Error during system.measure at step {t} for x_current={x_current}: {e}")
+                trajectory_is_valid = False
+                break
+                
+            temp_x_traj[t, :] = x_current.squeeze()
+            temp_y_traj[t, :] = y_current.squeeze()
+
+            try:
+                x_current = system.step(x_current)
+
+                x_current[0, 2] = torch.clamp(x_current[0, 2], -MAX_VELOCITY, MAX_VELOCITY)
+                x_current[0, 3] = torch.clamp(x_current[0, 3], -MAX_VELOCITY, MAX_VELOCITY)
+                
+            except Exception as e:
+                print(f"Error during system.step at step {t} for x_current={x_current}: {e}")
+                trajectory_is_valid = False
+                break
+
+        if trajectory_is_valid:
+            x_data[generated_count, :, :] = temp_x_traj
+            y_data[generated_count, :, :] = temp_y_traj
+            generated_count += 1
+            if generated_count % (num_trajectories // 10 if num_trajectories >= 10 else 1) == 0:
+                print(f"  Successfully generated trajectory {generated_count}/{num_trajectories} (Attempts: {total_attempts})")
+
+    print("-" * 30)
+    print("Data generation completed.")
+    print(f"Total number of attempts: {total_attempts}")
+    if total_attempts > 0:
+        print(f"Success rate (valid trajectories / attempts): { (num_trajectories / total_attempts) * 100 :.2f}%")
+    print(f"Total generated trajectories tensor shape: {x_data.shape}")
+    
     return x_data, y_data
 
 def store_model(model, path):
     torch.save(model.state_dict(), path)
-    print(f"Model byl uložen do {path}")
+    print(f"Model saved to {path}")
+
 def calculate_anees(x_true_list, x_hat_list, P_hat_list):
     """
-    Vypočítá Average NEES (ANEES) ze seznamů trajektorií.
-    Očekává, že všechny vstupní tenzory jsou na CPU.
+    Compute Average NEES (ANEES) from trajectory lists.
+    Expects all input tensors to be on CPU.
     """
     num_runs = len(x_true_list)
     if num_runs == 0:
@@ -101,7 +220,7 @@ def calculate_anees(x_true_list, x_hat_list, P_hat_list):
         x_hat = x_hat_list[i]
         P_hat = P_hat_list[i]
         
-        # NEES se počítá od t=1, protože v t=0 je chyba nulová a P0 je jen odhad
+        # NEES is computed from t=1 since at t=0 the error is zero and P0 is only an initial estimate
         seq_len_anees = x_true.shape[0] - 1
         if seq_len_anees <= 0:
             continue
@@ -110,7 +229,7 @@ def calculate_anees(x_true_list, x_hat_list, P_hat_list):
         nees_samples_run = torch.zeros(seq_len_anees)
 
         for t in range(seq_len_anees):
-            t_idx = t + 1 # Indexujeme od 1
+            t_idx = t + 1  # Index starting from 1
             error = x_true[t_idx] - x_hat[t_idx]
             P_t = P_hat[t_idx]
             
@@ -120,10 +239,118 @@ def calculate_anees(x_true_list, x_hat_list, P_hat_list):
                 P_inv = torch.inverse(P_stable)
                 nees_samples_run[t] = error.unsqueeze(0) @ P_inv @ error.unsqueeze(-1)
             except torch.linalg.LinAlgError:
-                print(f"Varování: Singularita matice P v trajektorii {i}, kroku {t_idx}. Přeskakuji.")
+                print(f"Warning: Matrix P is singular in trajectory {i}, step {t_idx}. Skipping.")
                 nees_samples_run[t] = float('nan')
             
         if not torch.isnan(nees_samples_run).all():
             total_nees += torch.nanmean(nees_samples_run).item()
         
     return total_nees / num_runs if num_runs > 0 else 0.0
+def generate_data_for_map_safe(system, num_trajectories, seq_len, force_initial_state_zero=False):
+    device = system.Ex0.device
+    
+    # --- BEZPEČNOSTNÍ LIMITY ---
+    HARD_CLAMP_VELOCITY = 20.0  # Fyzikální limit simulace (aby to neexplodovalo)
+    SAFE_VELOCITY_LIMIT = 20.0  # Limit pro dataset (chceme jen "slušné" trajektorie)
+    MAX_HEIGHT_JUMP = 15.0     # Maximální změna výšky v jednom kroku (metry)
+    MAP_MARGIN = 50.0           # Minimální vzdálenost od kraje mapy (metry)
+    
+    # Hranice mapy s rezervou
+    safe_min_x = system.min_x + MAP_MARGIN
+    safe_max_x = system.max_x - MAP_MARGIN
+    safe_min_y = system.min_y + MAP_MARGIN
+    safe_max_y = system.max_y - MAP_MARGIN
+
+    print(f"INFO: Generating SAFE data.")
+    print(f"  -> Velocity Limit: < {SAFE_VELOCITY_LIMIT} m/s")
+    print(f"  -> Map Margin: {MAP_MARGIN} m")
+    
+    x_data = torch.zeros(num_trajectories, seq_len, system.state_dim, device=device)
+    y_data = torch.zeros(num_trajectories, seq_len, system.obs_dim, device=device)
+
+    generated_count = 0
+    total_attempts = 0
+    
+    # Vypočítáme interval pro logování bezpečně (min 1)
+    log_interval = max(1, num_trajectories // 10)
+
+    while generated_count < num_trajectories:
+        total_attempts += 1
+        
+        # Pomocné buffery pro jednu trajektorii
+        temp_x_traj = torch.zeros(seq_len, system.state_dim, device=device)
+        temp_y_traj = torch.zeros(seq_len, system.obs_dim, device=device)
+        
+        # 1. Inicializace
+        if force_initial_state_zero:
+            x_current = torch.tensor([[0.0, 0.0, 0.0, 0.0]], device=device)
+        else:
+            x_current = system.get_deterministic_initial_state().view(1, -1)
+            # Přidáme trochu náhody, aby každá trajektorie nebyla stejná
+            x_current += torch.randn_like(x_current) * 0.1 
+
+        # Kontrola startu (musí být bezpečně uvnitř mapy)
+        if not (safe_min_x <= x_current[0,0] <= safe_max_x and safe_min_y <= x_current[0,1] <= safe_max_y):
+            continue # Zkusit znovu
+
+        trajectory_is_valid = True
+        
+        for t in range(seq_len):
+            # A) Uložení stavu
+            temp_x_traj[t, :] = x_current.squeeze()
+            
+            # B) Měření
+            try:
+                y_current = system.measure(x_current)
+                temp_y_traj[t, :] = y_current.squeeze()
+            except:
+                trajectory_is_valid = False
+                break
+            
+            # --- FILTR 1: SKOKY V TERÉNU ---
+            # Pokud se výška změnila o víc než X metrů za 1 sekundu, je to "divný" terén
+            if t > 0:
+                h_diff = abs(temp_y_traj[t, 0] - temp_y_traj[t-1, 0])
+                if h_diff > MAX_HEIGHT_JUMP:
+                    trajectory_is_valid = False
+                    print(f"Discarding: Terrain jump {h_diff:.2f}m at step {t}")
+                    break
+
+            # C) Krok dynamiky
+            try:
+                x_current = system.step(x_current)
+                
+                # Hard Clamp (pro fyziku simulace)
+                x_current[0, 2] = torch.clamp(x_current[0, 2], -HARD_CLAMP_VELOCITY, HARD_CLAMP_VELOCITY)
+                x_current[0, 3] = torch.clamp(x_current[0, 3], -HARD_CLAMP_VELOCITY, HARD_CLAMP_VELOCITY)
+                
+            except:
+                trajectory_is_valid = False
+                break
+            
+            # --- FILTR 2: OKRAJE MAPY ---
+            px, py = x_current[0, 0].item(), x_current[0, 1].item()
+            if not (safe_min_x <= px <= safe_max_x and safe_min_y <= py <= safe_max_y):
+                trajectory_is_valid = False
+                print("Discarding: Out of safe map bounds")
+                break
+                
+            # --- FILTR 3: RYCHLOST ---
+            vx, vy = x_current[0, 2].item(), x_current[0, 3].item()
+            if abs(vx) > SAFE_VELOCITY_LIMIT or abs(vy) > SAFE_VELOCITY_LIMIT:
+                trajectory_is_valid = False
+                print(f"Discarding: High velocity {vx:.1f}, {vy:.1f}")
+                break
+
+        # Pokud trajektorie přežila všechny kontroly, uložíme ji
+        if trajectory_is_valid:
+            x_data[generated_count, :, :] = temp_x_traj
+            y_data[generated_count, :, :] = temp_y_traj
+            generated_count += 1
+            
+            # Zde používáme bezpečný interval
+            if generated_count % log_interval == 0:
+                print(f"  Generated {generated_count}/{num_trajectories} (Efficiency: {generated_count/total_attempts:.1%})")
+
+    print(f"Generation Complete. Total attempts: {total_attempts}. Efficiency: {num_trajectories/total_attempts:.1%}")
+    return x_data, y_data

@@ -4,10 +4,13 @@ from .StateKalmanNetWithKnownR import StateKalmanNetWithKnownR
 from .StateBayesianKalmanNet import StateBayesianKalmanNet
 from .DNN_BayesianKalmanNet import DNN_BayesianKalmanNet
 
+from . import NCLT
+
 __all__ = [
     "DNN_KalmanNet",
     "StateKalmanNet",
     "StateKalmanNetWithKnownR",
     "StateBayesianKalmanNet",
     "DNN_BayesianKalmanNet",
+    "NCLT"
 ]

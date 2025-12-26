@@ -7,6 +7,7 @@ from .ParticleFilterSIR import ParticleFilterSIR
 from .AuxiliaryParticleFilter import AuxiliaryParticleFilter
 from Filters.ParticleFilterMH import ParticleFilterMH
 from .ParticleFilter import ParticleFilter
+from . import NCLT
 
 __all__ = [
     "KalmanFilter",
@@ -18,5 +19,6 @@ __all__ = [
     "ParticleFilterSIR",
     "AuxiliaryParticleFilter",
     "ParticleFilterMH",
-    "ParticleFilter"
+    "ParticleFilter",
+    "NCLT"
 ]
