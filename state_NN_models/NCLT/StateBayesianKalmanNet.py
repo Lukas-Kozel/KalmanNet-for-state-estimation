@@ -117,8 +117,9 @@ class StateBayesianKalmanNetNCLT(nn.Module):
             # ZMĚNA:
             # Pozice/Rychlost: Zvedneme na 0.5 - 0.8 (Aby se ensemble rozlezl)
             # Úhel: Zvedneme jen kosmeticky na 0.05 (Abychom neroztočili robota)
-            scale_vec = torch.tensor([0.1, 0.1, 0.1, 0.1, 0.05, 0.05], device=self.device)
-            # scale_vec = torch.tensor([0.5, 0.5, 0.5, 0.5, 0.2, 0.2], device=self.device)
+            scale_vec = torch.tensor([0.5, 0.5, 0.5, 0.5, 0.2, 0.2], device=self.device)
+            # scale_vec = torch.tensor([0.2, 0.2, 0.2, 0.2, 0.1, 0.1], device=self.device)
+            
             
         elif self.state_dim == 3: 
             scale_vec = torch.tensor([0.6, 0.6, 0.05], device=self.device)
@@ -179,7 +180,7 @@ class StateBayesianKalmanNetNCLT(nn.Module):
         self._check_tensor(raw_correction, "Raw Correction (K * Innovation)")
         
         correction = raw_correction * valid_mask.float() 
-        correction = torch.clamp(correction, min=-10.0, max=10.0)
+        # correction = torch.clamp(correction, min=-10.0, max=10.0)
         # POZOR: Pokud jsi zakomentoval clamp, zde může dojít k explozi
         # Doporučuji nechat alespoň měkký clamp pro debug
         # correction = torch.clamp(correction, min=-50.0, max=50.0) 

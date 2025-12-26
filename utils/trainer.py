@@ -1807,11 +1807,11 @@ def train_BayesianKalmanNet(
                 if is_zero_variance:
                     print("  !!! VAROVÁNÍ: Variance je 0. NLL Loss bude dělit nulou -> NaN !!!")
             if train_iter_count < warmup_iterations:
-                loss = F.mse_loss(x_hat_sequence, target_sequence) + regularization_loss
+                loss = F.mse_loss(x_hat_sequence, target_sequence) + regularization_loss * 1.0
                 nll_loss = torch.tensor(0.0)
             else:
                 nll_loss = gaussian_nll_safe(target_sequence, x_hat_sequence, cov_diag_sequence, min_var=1.0e-5,max_error_cap=100.0)
-                loss = nll_loss + regularization_loss
+                loss = nll_loss + regularization_loss * 1.0
             
             if torch.isnan(loss): print("Collapse detected (NaN loss)"); done = True; break
             
