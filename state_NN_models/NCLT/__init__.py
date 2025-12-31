@@ -4,6 +4,8 @@ from .StateBayesianKalmanNet import StateBayesianKalmanNetNCLT
 from .DNN_BayesianKalmanNet import DNN_BayesianKalmanNetNCLT
 from .DNN_KalmanFormer import DNN_KalmanFormerNCLT
 from .KalmanFormer import KalmanFormerNCLT
+from .StateBayesianKalmanNet_test import StateBayesianKalmanNetNCLT_test
+from .DNN_BayesianKalmanNet_test import DNN_BayesianKalmanNetNCLT_test
 
 __all__ = [
     "DNN_KalmanNetNCLT",
@@ -11,5 +13,7 @@ __all__ = [
     "StateBayesianKalmanNetNCLT",
     "DNN_BayesianKalmanNetNCLT",
     "DNN_KalmanFormerNCLT",
-    "KalmanFormerNCLT"
+    "KalmanFormerNCLT",
+    "StateBayesianKalmanNetNCLT_test",
+    "DNN_BayesianKalmanNetNCLT_test"
 ]
