@@ -2114,7 +2114,7 @@ def train_state_KalmanNetNCLT(model, train_loader, val_loader, device,
     return model
 
 
-def train_BayesianKalmanNet_test(
+def train_BayesianKalmanNetNCLT_test(
     model, train_loader, val_loader, device,
     total_train_iter, learning_rate, clip_grad,
     J_samples, validation_period, logging_period,
