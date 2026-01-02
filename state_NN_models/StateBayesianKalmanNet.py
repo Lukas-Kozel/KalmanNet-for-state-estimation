@@ -1,6 +1,7 @@
 from .DNN_BayesianKalmanNet import DNN_BayesianKalmanNet
 import torch
 import torch.nn as nn
+import torch.nn.init as init
 
 class StateBayesianKalmanNet(nn.Module):
     def __init__(self, system_model, device, hidden_size_multiplier=10, output_layer_multiplier=4, num_gru_layers=1,init_min_dropout=0.5,init_max_dropout=0.8):
@@ -20,6 +21,7 @@ class StateBayesianKalmanNet(nn.Module):
             device=self.device
         ).detach()
         self.reset()
+        self.init_weights()
 
 
     def reset(self, batch_size=1, initial_state=None):
@@ -82,3 +84,27 @@ class StateBayesianKalmanNet(nn.Module):
         total_regularization = regs
         
         return x_filtered, total_regularization
+    
+    def init_weights(self) -> None:
+        """Stabilní inicializace vah."""
+        print("INFO: Aplikuji 'Start Zero' inicializaci pro Kalman Gain.")
+        for name, m in self.dnn.named_modules():
+            if isinstance(m, nn.Linear):
+                init.kaiming_uniform_(m.weight, nonlinearity='relu')
+                if m.bias is not None: init.zeros_(m.bias)
+            elif isinstance(m, nn.LayerNorm):
+                init.constant_(m.bias, 0)
+                init.constant_(m.weight, 1.0)
+            elif isinstance(m, nn.GRU):
+                for param_name, param in m.named_parameters():
+                    if 'weight' in param_name: init.xavier_uniform_(param.data)
+                    elif 'bias' in param_name: param.data.fill_(0)
+
+        # Inicializace výstupní vrstvy blízko nule
+        if hasattr(self.dnn, 'output_layer') and len(self.dnn.output_layer) > 0:
+            last_layer = self.dnn.output_layer[-1] 
+            if isinstance(last_layer, nn.Linear):
+                init.uniform_(last_layer.weight, -1e-3, 1e-3)
+                if last_layer.bias is not None:
+                    init.zeros_(last_layer.bias)
+                print("DEBUG: Výstupní vrstva vynulována (Soft Start).")
