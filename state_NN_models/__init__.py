@@ -3,7 +3,8 @@ from .StateKalmanNet import StateKalmanNet
 from .StateKalmanNetWithKnownR import StateKalmanNetWithKnownR
 from .StateBayesianKalmanNet import StateBayesianKalmanNet
 from .DNN_BayesianKalmanNet import DNN_BayesianKalmanNet
-
+from .DNN_RNN import DNN_RNN
+from .RNN import RNN
 from . import NCLT
 
 __all__ = [
@@ -12,5 +13,7 @@ __all__ = [
     "StateKalmanNetWithKnownR",
     "StateBayesianKalmanNet",
     "DNN_BayesianKalmanNet",
-    "NCLT"
+    "NCLT",
+    "DNN_RNN",
+    "RNN"
 ]

@@ -6,6 +6,8 @@ from .DNN_KalmanFormer import DNN_KalmanFormerNCLT
 from .KalmanFormer import KalmanFormerNCLT
 from .StateBayesianKalmanNet_test import StateBayesianKalmanNetNCLT_test
 from .DNN_BayesianKalmanNet_test import DNN_BayesianKalmanNetNCLT_test
+from .DNN_RNN import DNN_RNN
+from .RNN import RNN_NCLT
 
 __all__ = [
     "DNN_KalmanNetNCLT",
@@ -15,5 +17,7 @@ __all__ = [
     "DNN_KalmanFormerNCLT",
     "KalmanFormerNCLT",
     "StateBayesianKalmanNetNCLT_test",
-    "DNN_BayesianKalmanNetNCLT_test"
+    "DNN_BayesianKalmanNetNCLT_test",
+    "DNN_RNN",
+    "RNN_NCLT"
 ]
