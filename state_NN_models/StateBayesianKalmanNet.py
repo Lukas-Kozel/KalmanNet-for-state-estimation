@@ -1,17 +1,18 @@
 from .DNN_BayesianKalmanNet import DNN_BayesianKalmanNet
 import torch
 import torch.nn as nn
+import torch.nn.functional as func
 import torch.nn.init as init
 
 class StateBayesianKalmanNet(nn.Module):
-    def __init__(self, system_model, device, hidden_size_multiplier=10, output_layer_multiplier=4, num_gru_layers=1,init_min_dropout=0.5,init_max_dropout=0.8):
+    def __init__(self, system_model, device, hidden_size_multiplier=10, output_layer_multiplier=4, num_gru_layers=1,init_min_dropout=0.5,init_max_dropout=0.8, norm_states=False):
         super(StateBayesianKalmanNet, self).__init__()
 
         self.device = device
         self.system_model = system_model
         self.state_dim = system_model.state_dim
         self.obs_dim = system_model.obs_dim
-
+        self.norm_states = norm_states
         self.dnn = DNN_BayesianKalmanNet(system_model, hidden_size_multiplier, output_layer_multiplier, num_gru_layers, init_min_dropout, init_max_dropout).to(device)
 
         self.h_init_master = torch.randn(
@@ -65,8 +66,14 @@ class StateBayesianKalmanNet(nn.Module):
         # y_t - y_{t-1}
         diff_obs = y_t - self.y_t_minus_1
 
-        # 3. PRŮCHOD SÍTÍ A KOREKCE
-        K_vec, h_new, regs = self.dnn(state_inno, inovation, diff_state, diff_obs, self.h_prev)
+        if self.norm_states:
+            norm_diff_obs = func.normalize(diff_obs, p=2, dim=1, eps=1e-12)
+            norm_innovation = func.normalize(inovation, p=2, dim=1, eps=1e-12)
+            norm_diff_state = func.normalize(diff_state, p=2, dim=1, eps=1e-12)
+            norm_state_inno = func.normalize(state_inno, p=2, dim=1, eps=1e-12)
+            K_vec, h_new, regs = self.dnn(norm_state_inno, norm_innovation, norm_diff_state, norm_diff_obs, self.h_prev)
+        else:
+            K_vec, h_new, regs = self.dnn(state_inno, inovation, diff_state, diff_obs, self.h_prev)
         
         K = K_vec.reshape(-1, self.state_dim, self.obs_dim)
         correction = torch.bmm(K, inovation.unsqueeze(-1)).squeeze(-1)

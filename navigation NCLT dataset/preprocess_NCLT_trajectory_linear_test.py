@@ -2,6 +2,7 @@ import os
 import numpy as np
 import pandas as pd
 import torch
+import matplotlib.pyplot as plt
 
 # ==============================================================================
 # 1. KONFIGURACE
@@ -13,10 +14,10 @@ DT = 1.0  # Časový krok (1 Hz)
 BASE_DIR = os.getcwd()
 GT_FILE = os.path.join(BASE_DIR, 'ground_truth', f'groundtruth_{SESSION_DATE}.csv')
 SENSOR_DIR = os.path.join(BASE_DIR, 'data', 'sensor', SESSION_DATE)
-OUTPUT_DIR = os.path.join(BASE_DIR, f'preprocessed_NCLT_trajectory-{SESSION_DATE}')
+OUTPUT_DIR = os.path.join(BASE_DIR, f'preprocessed_NCLT_trajectory-{SESSION_DATE}-angle-update')
 
 # ==============================================================================
-# 2. POMOCNÉ FUNKCE (Geometrie)
+# 2. POMOCNÉ FUNKCE (Geometrie a Načítání)
 # ==============================================================================
 def gps_to_local_coord(lat, lon):
     """Převod Lat/Lon na lokální metry dle NCLT specifikace."""
@@ -48,8 +49,9 @@ def load_csv_as_df(path, cols=None, names=None):
     
     print(f"  -> Načítám: {os.path.basename(path)}")
     
-    # Načteme CSV (ignorujeme chyby na řádcích s jiným počtem sloupců)
-    df = pd.read_csv(path, header=None, usecols=cols, names=names, on_bad_lines='skip')
+    # Načteme CSV (low_memory=False potlačí DtypeWarning, my si to stejně převedeme sami)
+    df = pd.read_csv(path, header=None, usecols=cols, names=names, 
+                     on_bad_lines='skip', low_memory=False)
     
     # --- OPRAVA CHYBY "Mixed Types" ---
     # Vynutíme konverzi všech sloupců na čísla. 
@@ -70,7 +72,52 @@ def load_csv_as_df(path, cols=None, names=None):
     return df
 
 # ==============================================================================
-# 3. HLAVNÍ PROCESING
+# 3. NOVÁ FUNKCE PRO DIAGNOSTIKU (OPRAVENO)
+# ==============================================================================
+def plot_diagnostics(df, output_dir):
+    """Vykreslí Yaw a Rychlosti pro kontrolu kvality dat."""
+    print("  -> Generuji diagnostické grafy...")
+    
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+
+    fig, axes = plt.subplots(3, 1, figsize=(12, 12), sharex=True)
+    
+    # Používáme .values pro převod na numpy array, aby si Matplotlib nestěžoval
+    t_values = df.index.values
+
+    # 1. Graf: YAW (Heading)
+    axes[0].plot(t_values, df['yaw'].values, label='Yaw (Odometrie)', color='purple', linewidth=1)
+    axes[0].set_ylabel('Yaw [rad]')
+    axes[0].set_title('Kontrola úhlu natočení (Yaw)')
+    axes[0].grid(True, linestyle='--', alpha=0.6)
+    axes[0].legend()
+
+    # 2. Graf: Rychlost v ose X (Porovnání GT a ODO)
+    axes[1].plot(t_values, df['gt_vx'].values, label='Ground Truth Vx', color='green', alpha=0.7)
+    axes[1].plot(t_values, df['odo_vx'].values, label='Odometrie Vx', color='orange', linestyle='--', alpha=0.8)
+    axes[1].set_ylabel('Vx [m/s]')
+    axes[1].set_title('Kontrola rychlosti v ose X')
+    axes[1].grid(True, linestyle='--', alpha=0.6)
+    axes[1].legend()
+
+    # 3. Graf: Trajektorie (XY) - jen pro orientaci
+    axes[2].plot(t_values, df['gt_px'].values, label='GT Poloha X', color='blue')
+    axes[2].plot(t_values, df['gps_px'].values, label='GPS Poloha X', color='red', alpha=0.5, linestyle=':')
+    axes[2].set_ylabel('Poloha X [m]')
+    axes[2].set_xlabel('Čas [s]')
+    axes[2].set_title('Kontrola Polohy X (GT vs GPS)')
+    axes[2].grid(True, linestyle='--', alpha=0.6)
+    axes[2].legend()
+
+    plt.tight_layout()
+    save_path = os.path.join(output_dir, 'diagnostics_plot.png')
+    plt.savefig(save_path, dpi=150)
+    print(f"✅ Graf uložen: {save_path}")
+    # plt.show() # Odkomentuj, pokud chceš zobrazit okno při běhu
+
+# ==============================================================================
+# 4. HLAVNÍ PROCESING
 # ==============================================================================
 def process_data():
     print(f"=== ZPRACOVÁNÍ TRAJEKTORIE {SESSION_DATE} ===")
@@ -105,17 +152,39 @@ def process_data():
     t_end = df_gt_raw.index[-1]
     t_grid = np.arange(t_start, t_end, DT)
     
-    def reindex_and_interp(df, target_index):
-        # Robustní interpolace: Sjednotíme indexy, seřadíme, interpolujeme, ořízneme
+    def reindex_and_interp(df, target_index, angular_cols=None):
+        if angular_cols is None:
+            angular_cols = []
+
+        # 1. Sjednocení indexů a odstranění duplicit
         combined_index = df.index.union(target_index).sort_values()
-        # Drop duplicates v indexu pro jistotu
         combined_index = combined_index.drop_duplicates()
         
-        df_interp = df.reindex(combined_index).interpolate(method='index').dropna()
-        
-        # Vrátíme jen cílové časy (intersection)
-        # Použijeme reindex s tolerancí, kdyby float aritmetika neseděla přesně, 
-        # ale zde jsme unionovali, takže by to mělo sedět.
+        # Přeindexování (zatím s NaN tam, kde chybí data)
+        df_reindexed = df.reindex(combined_index)
+
+        # 2. Speciální zpracování pro úhly (Unwrap -> Interpolate -> Wrap)
+        for col in angular_cols:
+            if col in df_reindexed.columns:
+                # Získáme validní data (nenulová) pro unwrap
+                valid_mask = df_reindexed[col].notna()
+                values = df_reindexed.loc[valid_mask, col].values
+                
+                # "Rozbalíme" úhly (odstraníme skoky přes 2pi)
+                unwrapped_values = np.unwrap(values)
+                
+                # Vrátíme rozbalené hodnoty do DataFrame pro interpolaci
+                df_reindexed.loc[valid_mask, col] = unwrapped_values
+
+        # 3. Lineární interpolace všech sloupců (nyní funguje i pro 'unwrapped' úhly)
+        df_interp = df_reindexed.interpolate(method='index').dropna()
+
+        # 4. Zabalení úhlů zpět do intervalu [-pi, pi]
+        for col in angular_cols:
+            if col in df_interp.columns:
+                df_interp[col] = (df_interp[col] + np.pi) % (2 * np.pi) - np.pi
+
+        # 5. Vrátíme jen cílové časy
         return df_interp.reindex(target_index).dropna()
 
     # 1. Ground Truth
@@ -128,7 +197,7 @@ def process_data():
     df_whl = reindex_and_interp(df_whl_raw, t_grid)
     
     # 4. Euler
-    df_eul = reindex_and_interp(df_eul_raw, t_grid)
+    df_eul = reindex_and_interp(df_eul_raw, t_grid, angular_cols=['yaw'])
 
     # --- C. VÝPOČTY (Rychlosti) ---
     print("  -> Výpočet globálních rychlostí...")
@@ -145,7 +214,11 @@ def process_data():
     df['odo_vx'] = df['v_lin'] * np.cos(df['yaw'])
     df['odo_vy'] = df['v_lin'] * np.sin(df['yaw'])
 
-    # --- D. ČIŠTĚNÍ ---
+    # --- D. DIAGNOSTIKA (Vykreslení grafu) ---
+    # Voláme ještě před finálním ořezáním sloupců, abychom viděli 'yaw'
+    plot_diagnostics(df, OUTPUT_DIR)
+
+    # --- E. ČIŠTĚNÍ ---
     cols_of_interest = ['gt_px', 'gt_vx', 'gt_py', 'gt_vy', 
                         'gps_px', 'odo_vx', 'gps_py', 'odo_vy']
     
@@ -160,7 +233,7 @@ def process_data():
     return torch.tensor(X_np), torch.tensor(Y_np)
 
 # ==============================================================================
-# 4. ULOŽENÍ
+# 5. ULOŽENÍ
 # ==============================================================================
 def save_splits(X, Y):
     if not os.path.exists(OUTPUT_DIR):
