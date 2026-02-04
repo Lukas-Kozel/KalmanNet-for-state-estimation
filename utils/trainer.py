@@ -645,10 +645,10 @@ def train_state_KalmanNet(model, train_loader, val_loader, device,
                 epoch_traces.append(avg_trace_batch)
 
             loss = criterion(predicted_trajectory, x_true_batch[:, 1:, :])
-            diff = predicted_trajectory - x_true_batch[:, 1:, :]
-            pos_loss = torch.mean(diff[:, :, :2]**2) # Pozice X, Y
-            vel_loss = torch.mean(diff[:, :, 2:]**2) # Rychlost
-            loss = 100.0 * pos_loss + 1.0 * vel_loss
+            # diff = predicted_trajectory - x_true_batch[:, 1:, :]
+            # pos_loss = torch.mean(diff[:, :, :2]**2) # Pozice X, Y
+            # vel_loss = torch.mean(diff[:, :, 2:]**2) # Rychlost
+            # loss = 100.0 * pos_loss + 1.0 * vel_loss
 
             loss.backward()
 
@@ -887,15 +887,15 @@ def train_state_KalmanNet_sliding_window(model, train_loader, val_loader, device
     print(f"INFO: Detected from model attribute that it returns covariance: {returns_covariance}")
     print(f"INFO: Starting training with TBPTT(k={tbptt_k}, w={tbptt_w})")
 
-    if init_noise_std is None:
-        init_noise_std = torch.tensor([5.0, 5.0, 2.0, 2.0], device=device)
-    else:
-        init_noise_std = init_noise_std.to(device)
+    # if init_noise_std is None:
+    #     init_noise_std = torch.tensor([5.0, 5.0, 2.0, 2.0], device=device)
+    # else:
+    #     init_noise_std = init_noise_std.to(device)
 
     for epoch in range(epochs):
         model.train()
         train_loss = 0.0
-
+        total_windows_epoch = 0
         for x_true_batch, y_meas_batch in train_loader:
             x_true_batch = x_true_batch.to(device)
             y_meas_batch = y_meas_batch.to(device)
@@ -1849,7 +1849,35 @@ def train_BayesianKalmanNet_with_input(
         "final_model": model
     }
 
-
+def gaussian_nll_robust_test(target, preds, var, min_var=1e-3, max_var=1e6):
+    """
+    Robustní NLL loss pro trénování Bayesian KalmanNetu.
+    
+    Args:
+        target: Ground truth [Batch, Seq, Dim]
+        preds: Odhad stavu [Batch, Seq, Dim]
+        var: Odhad variance (diagonal) [Batch, Seq, Dim]
+        min_var: Minimální povolená variance (např. 1mm^2 = 1e-6, 
+                 ale pro stabilitu raději 1e-3 na začátku).
+    """
+    
+    # 1. CLAMP VARIANCE (Nejdůležitější krok)
+    # Říkáme modelu: "Nemůžeš si být jistější než 3 cm (sqrt(1e-3))."
+    # Tím zabráníme dělení nulou I collapse variance.
+    var = torch.clamp(var, min=min_var, max=max_var)
+    
+    # 2. Výpočet kvadratické chyby
+    error_sq = (preds - target) ** 2
+    
+    # 3. NLL Loss
+    # log(var) trestá velkou nejistotu
+    # error^2 / var trestá chybu (váženou jistotou)
+    loss = 0.5 * (torch.log(var) + error_sq / var)
+    
+    # Poznámka: Zde NIKDY nepoužívej clamp na výsledek (loss), 
+    # protože bys zabil gradient, který nutí model ZVĚTŠIT varianci, když dělá chybu.
+    
+    return loss.mean()
 def train_BayesianKalmanNet(
     model, train_loader, val_loader, device,
     total_train_iter, learning_rate, clip_grad,
@@ -1925,9 +1953,9 @@ def train_BayesianKalmanNet(
                     print("  !!! VAROVÁNÍ: Variance je 0. NLL Loss bude dělit nulou -> NaN !!!")
             if train_iter_count < warmup_iterations:
                 loss = F.mse_loss(x_hat_sequence, target_sequence) + regularization_loss * 1.0
-                nll_loss = torch.tensor(0.0)
+                nll_loss = gaussian_nll_safe(target_sequence, x_hat_sequence, cov_diag_sequence, min_var=1.0e-5,max_error_cap=100.0) 
             else:
-                nll_loss = gaussian_nll_safe(target_sequence, x_hat_sequence, cov_diag_sequence, min_var=1.0e-5,max_error_cap=100.0)
+                nll_loss = gaussian_nll_safe(target_sequence, x_hat_sequence, cov_diag_sequence, min_var=1.0e-5,max_error_cap=100.0) 
                 loss = nll_loss + regularization_loss * 1.0
             
             if torch.isnan(loss): print("Collapse detected (NaN loss)"); done = True; break
@@ -2588,3 +2616,566 @@ def train_kalmanformer_nclt_full_sequence(model, train_loader, val_loader, devic
         model.load_state_dict(best_model_state)
         
     return model
+
+
+def train_state_KalmanNetTAN(model, train_loader, val_loader, device, 
+                          epochs=100, lr=1e-3, clip_grad=10, early_stopping_patience=20, 
+                          optimizer_type=torch.optim.AdamW, weight_decay=1e-5,
+                          print_gradient=False, add_noise_to_initial_state=False, init_noise_std=None):
+    """
+    Robustní tréninková funkce pro KalmanNet s Huber Loss (prevence exploze gradientů).
+    """
+    
+    # --- 1. ZMĚNA: Huber Loss pro stabilitu ---
+    # Delta=10.0 znamená: Chyby do 10 metrů trestáme kvadraticky (přesnost), 
+    # chyby nad 10 metrů lineárně (robustnost proti divergenci).
+    # criterion = nn.HuberLoss(delta=10.0) 
+    criterion = nn.MSELoss()
+    # Metrika pro lidské čtení (MSE, abychom viděli reálný rozptyl)
+    metric_mse = nn.MSELoss()
+    
+    optimizer = optimizer_type(model.parameters(), lr=lr, weight_decay=weight_decay)
+    
+    best_val_loss = float('inf')
+    epochs_no_improve = 0
+    best_model_state = None
+
+    model.eval()
+    if not hasattr(model, 'returns_covariance'):
+            raise AttributeError("Error: Model does not define attribute 'returns_covariance'.")
+        
+    returns_covariance = model.returns_covariance
+    
+    if init_noise_std is None:
+        init_noise_std = torch.tensor([5.0, 5.0, 2.0, 2.0], device=device)
+    else:
+        init_noise_std = init_noise_std.to(device)
+
+    print(f"Start training on {device}...")
+
+    for epoch in range(epochs):
+        # --- Training phase ---
+        model.train()
+        train_loss = 0.0
+        epoch_traces = []
+        
+        # Pro statistiky
+        train_pos_mse_sum = 0.0
+        train_vel_mse_sum = 0.0
+
+        for x_true_batch, y_meas_batch in train_loader:
+            x_true_batch = x_true_batch.to(device)
+            y_meas_batch = y_meas_batch.to(device)
+
+            optimizer.zero_grad()
+            batch_size, seq_len, _ = x_true_batch.shape
+            
+            # Inicializace stavu (s případným šumem)
+            initial_state = x_true_batch[:, 0, :]
+            if add_noise_to_initial_state:
+                noise = torch.randn_like(initial_state) * init_noise_std
+                noisy_initial_state = initial_state.clone() + noise
+                model.reset(batch_size=batch_size, initial_state=noisy_initial_state)
+            else:    
+                model.reset(batch_size=batch_size, initial_state=initial_state)
+
+            predictions_x = []
+            predictions_P = []
+
+            # Forward pass v čase
+            for t in range(1, seq_len):
+                y_t = y_meas_batch[:, t, :]
+                step_output = model.step(y_t)
+                
+                if returns_covariance:
+                    x_filtered_t, P_filtered_t = step_output
+                    predictions_P.append(P_filtered_t)
+                else:
+                    x_filtered_t = step_output
+
+                predictions_x.append(x_filtered_t)
+
+            predicted_trajectory = torch.stack(predictions_x, dim=1)
+            target_trajectory = x_true_batch[:, 1:, :]
+
+            # Sběr průměrné stopy kovariance (pro diagnostiku)
+            if returns_covariance and predictions_P:
+                predicted_cov_trajectory = torch.stack(predictions_P, dim=1)
+                # Výpočet stopy (Trace) kovarianční matice P
+                current_trace = torch.mean(torch.sum(torch.diagonal(predicted_cov_trajectory.detach(), offset=0, dim1=-2, dim2=-1), dim=-1)).item()
+                epoch_traces.append(current_trace)
+
+            # --- Loss Calculation ---
+            loss = criterion(predicted_trajectory, target_trajectory)
+            loss.backward()
+
+            # Statistiky (pro výpis, ne pro gradient)
+            with torch.no_grad():
+                diff = predicted_trajectory - target_trajectory
+                pos_mse = torch.mean(diff[:, :, :2]**2).item()
+                vel_mse = torch.mean(diff[:, :, 2:]**2).item()
+                train_pos_mse_sum += pos_mse
+                train_vel_mse_sum += vel_mse
+
+            if print_gradient:
+                print(f"Grad: {model.dnn.input_layer[0].weight.grad.abs().mean().item()}")
+            
+            if clip_grad > 0:
+                nn.utils.clip_grad_norm_(model.parameters(), clip_grad)
+            
+            optimizer.step()
+            train_loss += loss.item()
+        
+        avg_train_loss = train_loss / len(train_loader)
+        avg_pos_mse = train_pos_mse_sum / len(train_loader)
+        avg_vel_mse = train_vel_mse_sum / len(train_loader)
+        avg_epoch_trace = np.mean(epoch_traces) if epoch_traces else 0.0
+
+        # --- Validation phase ---
+        model.eval()
+        epoch_val_loss = 0.0
+        epoch_val_mse = 0.0
+        
+        with torch.no_grad():
+            for x_true_val, y_meas_val in val_loader:
+                x_true_val, y_meas_val = x_true_val.to(device), y_meas_val.to(device)
+                batch_size_val, seq_len_val, _ = x_true_val.shape
+
+                initial_state = x_true_val[:,0,:]
+                model.reset(batch_size=batch_size_val, initial_state=initial_state) # Validace bez šumu init stavu!
+                
+                val_predictions = []
+                for t in range(1, seq_len_val):
+                    y_t_val = y_meas_val[:, t, :]
+                    step_output_val = model.step(y_t_val)
+                    if returns_covariance:
+                        x_filtered_t_val = step_output_val[0]
+                    else:   
+                        x_filtered_t_val = step_output_val
+                    val_predictions.append(x_filtered_t_val)
+                    
+                predicted_val_trajectory = torch.stack(val_predictions, dim=1)
+                target_val_trajectory = x_true_val[:, 1:, :]
+
+                # Loss
+                val_loss_batch = criterion(predicted_val_trajectory, target_val_trajectory)
+                epoch_val_loss += val_loss_batch.item()
+                
+                # Čistá MSE pro report
+                mse_batch = metric_mse(predicted_val_trajectory, target_val_trajectory)
+                epoch_val_mse += mse_batch.item()
+
+        avg_val_loss = epoch_val_loss / len(val_loader)
+        avg_val_mse = epoch_val_mse / len(val_loader)
+        
+        # --- Logging ---
+        # 1. Nejprve sestavíme základní log
+        log_str = f'Epoch [{epoch+1}/{epochs}] | Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f}'
+        
+        # 2. Check na zlepšení
+        if avg_val_loss < best_val_loss:
+            best_val_loss = avg_val_loss
+            epochs_no_improve = 0
+            best_model_state = deepcopy(model.state_dict())
+            save_msg = " -> New Best!"
+        else:
+            epochs_no_improve += 1
+            save_msg = ""
+
+        # 3. Periodický výpis (tady byl BUG - log_message neexistovala)
+        if (epoch + 1) % 5 == 0:
+            detailed_msg = f"{log_str} | PosMSE: {avg_pos_mse:.1f}, VelMSE: {avg_vel_mse:.1f}"
+            if returns_covariance:
+                detailed_msg += f" | CovTrace: {avg_epoch_trace:.1f}"
+            print(detailed_msg + save_msg)
+        
+        # Výpis pouze při uložení (pokud není periodický)
+        elif save_msg: 
+             print(log_str + save_msg)
+
+        if epochs_no_improve >= early_stopping_patience:
+            print(f"\nEarly stopping triggered after {epoch + 1} epochs.")
+            break
+            
+    print("Training completed.")
+    if best_model_state:
+        print(f"Loading best model with validation loss: {best_val_loss:.6f}")
+        model.load_state_dict(best_model_state)
+        
+    return model
+
+
+def train_state_KalmanNet_sliding_windowTAN(model, train_loader, val_loader, device, 
+                          epochs=100, lr=1e-3, clip_grad=10, early_stopping_patience=20,
+                          tbptt_k=2, tbptt_w=10,optimizer_=torch.optim.Adam, weight_decay_=1e-4, criterion_=nn.MSELoss()):
+    criterion = criterion_
+    metric_mse = nn.MSELoss()
+    optimizer = optimizer_(model.parameters(), lr=lr, weight_decay=weight_decay_)
+    
+    best_val_loss = float('inf')
+    epochs_no_improve = 0
+    best_model_state = None
+
+    model.eval()
+    if not hasattr(model, 'returns_covariance'):
+            raise AttributeError("Error: Model does not define attribute 'returns_covariance'.")
+    if not hasattr(model, '_detach'):
+            raise AttributeError("Error: Model does not implement method `_detach()`, "
+                                 "which is required for TBPTT(k,w,D).")
+        
+    returns_covariance = model.returns_covariance
+    print(f"INFO: Detected from model attribute that it returns covariance: {returns_covariance}")
+    print(f"INFO: Starting training with TBPTT(k={tbptt_k}, w={tbptt_w})")
+
+    # if init_noise_std is None:
+    #     init_noise_std = torch.tensor([5.0, 5.0, 2.0, 2.0], device=device)
+    # else:
+    #     init_noise_std = init_noise_std.to(device)
+
+    for epoch in range(epochs):
+        model.train()
+        train_loss = 0.0
+
+        for x_true_batch, y_meas_batch in train_loader:
+            x_true_batch = x_true_batch.to(device)
+            y_meas_batch = y_meas_batch.to(device)
+
+            batch_size, seq_len, _ = x_true_batch.shape # seq_len is 'D' from the paper
+            
+            model.reset(batch_size=batch_size, initial_state=x_true_batch[:, 0, :])
+
+            total_loss_for_batch = 0.0
+            num_windows = 0
+
+            # Loop over the entire sequence in windows of 'w'
+            for t_start in range(1, seq_len, tbptt_w):
+                t_end = min(t_start + tbptt_w, seq_len)
+                window_len = t_end - t_start
+                
+                if window_len == 0:
+                    continue
+                    
+                predictions_x = []
+
+                # 1. Forward pass over window 'w'
+                for t in range(t_start, t_end):
+                    y_t = y_meas_batch[:, t, :]
+                    step_output = model.step(y_t)
+                    
+                    x_filtered_t = step_output[0] if returns_covariance else step_output
+                    predictions_x.append(x_filtered_t)
+                    
+                    # Detach gradients every 'k' steps
+                    if (t - t_start + 1) % tbptt_k == 0:
+                        model._detach()
+
+                # 3. Detach at window end (before backward())
+                model._detach()
+                
+                # 4. Compute loss ONLY for this window (HYBRIDNÍ)
+                predicted_window = torch.stack(predictions_x, dim=1)
+                true_window = x_true_batch[:, t_start:t_end, :]
+                
+                loss = criterion(predicted_window, true_window)
+
+                # 5. Backward pass and weight update (per window)
+                optimizer.zero_grad()
+                loss.backward()
+                
+                if clip_grad > 0:
+                    nn.utils.clip_grad_norm_(model.parameters(), clip_grad)
+                
+                optimizer.step()
+                
+                total_loss_for_batch += loss.item()                
+                num_windows += 1
+            
+            if num_windows > 0:
+                train_loss += (total_loss_for_batch / num_windows)
+                # total_windows_epoch += num_windows
+        
+        avg_train_loss = train_loss / len(train_loader)
+
+        # --- VALIDATION ---
+        model.eval()
+        epoch_val_loss = 0.0
+        epoch_val_mse = 0.0 # Pro čistou metriku
+
+        with torch.no_grad():
+            for x_true_val, y_meas_val in val_loader:
+                x_true_val, y_meas_val = x_true_val.to(device), y_meas_val.to(device)
+                batch_size_val, seq_len_val, _ = x_true_val.shape
+                model.reset(batch_size=batch_size_val, initial_state=x_true_val[:, 0, :])
+                
+                val_predictions = []
+                for t in range(1, seq_len_val):
+                    y_t_val = y_meas_val[:, t, :]
+                    step_output_val = model.step(y_t_val)
+                    
+                    if returns_covariance:
+                        x_filtered_t_val = step_output_val[0]
+                    else:   
+                        x_filtered_t_val = step_output_val
+
+                    val_predictions.append(x_filtered_t_val)
+                    
+                predicted_val_trajectory = torch.stack(val_predictions, dim=1)
+                target_val_trajectory = x_true_val[:, 1:, :]
+                val_loss_batch = criterion(predicted_val_trajectory, target_val_trajectory)
+                epoch_val_loss += val_loss_batch.item()
+# Validační metrika (MSE - pro reportování)
+                mse_batch = metric_mse(predicted_val_trajectory, target_val_trajectory)
+                epoch_val_mse += mse_batch.item()
+
+        avg_val_loss = epoch_val_loss / len(val_loader)
+        avg_val_mse = epoch_val_mse / len(val_loader)
+        log_str = f'Epoch [{epoch+1}/{epochs}] | Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f}'
+        
+        if avg_val_loss < best_val_loss:
+            best_val_loss = avg_val_loss
+            epochs_no_improve = 0
+            best_model_state = deepcopy(model.state_dict())
+            save_msg = " -> New Best!"
+        else:
+            epochs_no_improve += 1
+            save_msg = ""
+            
+        if (epoch + 1) % 5 == 0:
+             print(f"{log_str} | Val MSE: {avg_val_mse:.2f}{save_msg}")
+        elif save_msg:
+             print(log_str + save_msg)
+
+        if epochs_no_improve >= early_stopping_patience:
+            print(f"\nEarly stopping triggered after {epoch + 1} epochs.")
+            break
+            
+    print("Training completed.")
+    if best_model_state:
+        print(f"Loading best model with validation loss: {best_val_loss:.6f}")
+        model.load_state_dict(best_model_state)
+        
+    return model
+from copy import deepcopy
+import numpy as np
+import torch
+import torch.nn.functional as F
+from copy import deepcopy
+import numpy as np
+import torch
+import torch.nn.functional as F
+
+def train_BayesianKalmanNetTAN(
+    model, train_loader, val_loader, device,
+    total_train_iter, learning_rate, clip_grad,
+    J_samples, validation_period, logging_period,
+    warmup_iterations=0, weight_decay_=1e-5
+):
+    # torch.autograd.set_detect_anomaly(True)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay_)
+    
+    # Inicializace metrik pro ukládání (VŽDY sledujeme MSE)
+    best_val_mse = float('inf') 
+    best_val_anees = float('inf') # Jen pro informaci
+    
+    score_at_best = {"val_nll": 0.0, "val_mse": 0.0, "val_anees": 0.0}
+    best_iter_count = 0
+    best_model_state = None
+    train_iter_count = 0
+    done = False
+
+    print("INFO: Trénink bude ukládat nejlepší model VŽDY podle metriky: MSE")
+
+    while not done:
+        model.train()
+        for x_true_batch, y_meas_batch in train_loader:
+            if train_iter_count >= total_train_iter: done = True; break
+            
+            # --- Skip invalid batches ---
+            if torch.isnan(x_true_batch).any():
+                print(f"!!! SKIP BATCH iter {train_iter_count}: NaN found in x_true !!!")
+                continue
+                
+            x_true_batch = x_true_batch.to(device)
+            y_meas_batch = y_meas_batch.to(device)
+            
+            # --- Training ---
+            optimizer.zero_grad()
+            batch_size, seq_len, _ = x_true_batch.shape
+            
+            # 1. Batch Expansion (J paralelních běhů)
+            x_true_exp = x_true_batch.repeat_interleave(J_samples, dim=0)
+            y_meas_exp = y_meas_batch.repeat_interleave(J_samples, dim=0)
+            
+            # 2. Reset & Forward
+            model.reset(batch_size=batch_size * J_samples, initial_state=x_true_exp[:, 0, :])
+            
+            x_hat_list = []
+            regs_list = []
+            
+            for t in range(1, seq_len):
+                x_filt, reg = model.step(y_meas_exp[:, t, :])
+                
+                # Check NaNs inside step
+                if torch.isnan(x_filt).any():
+                    print(f"!!! CRITICAL: NaN detected in step output at iter {train_iter_count}, step {t}")
+                    raise ValueError("NaN in step output")
+                    
+                x_hat_list.append(x_filt)
+                regs_list.append(reg)
+            
+            # 3. Rekonstrukce [J, Batch, Seq, Dim]
+            x_hat_flat = torch.stack(x_hat_list, dim=1) 
+            # Reshape na [Batch, J, Seq, Dim]
+            x_hat_reshaped = x_hat_flat.view(batch_size, J_samples, seq_len-1, -1)
+            
+            # Statistiky ensemblu
+            x_hat_mean = x_hat_reshaped.mean(dim=1)
+            x_hat_var = x_hat_reshaped.var(dim=1) + 1e-6 # Epsilon proti nule
+            
+            regularization_loss = torch.stack(regs_list).mean()
+            target_sequence = x_true_batch[:, 1:, :]
+            
+            # 4. Diagnostika (Volitelné logování)
+            if train_iter_count % logging_period == 0:
+                diff = x_hat_mean - target_sequence
+                mean_error = diff.abs().mean().item()
+                min_variance = x_hat_var.min().item()
+                mean_variance = x_hat_var.mean().item()
+                print(f"\n[DIAGNOSTIKA iter {train_iter_count}]")
+                print(f"  -> Rozdíl (Pred - Target): {mean_error:.6f}")
+                print(f"  -> Min Variance v batchi:  {min_variance:.2e}")
+                print(f"  -> Mean Variance v batchi: {mean_variance:.2e}")
+
+            # 5. Výpočet Loss
+            if train_iter_count < warmup_iterations:
+                # Fáze 1: Učíme se trefit cíl (MSE)
+                loss = F.mse_loss(x_hat_mean, target_sequence) + regularization_loss
+                nll_loss = gaussian_nll_safe(target_sequence, x_hat_mean, x_hat_var, min_var=1.0e-5, max_error_cap=100.0)
+            else:
+                # Fáze 2: Učíme se nejistotu (NLL)
+                # (Předpokládám, že gaussian_nll_safe je dostupná v scope)
+                nll_loss = gaussian_nll_safe(target_sequence, x_hat_mean, x_hat_var, min_var=1.0e-5, max_error_cap=100.0)
+                loss = nll_loss + regularization_loss
+            
+            if torch.isnan(loss):
+                print("Collapse detected (NaN loss). Stopping.")
+                done = True
+                break
+            
+            loss.backward()
+            if clip_grad > 0: 
+                torch.nn.utils.clip_grad_norm_(model.parameters(), clip_grad)
+            optimizer.step()
+            train_iter_count += 1
+            
+            # 6. Logování průběhu
+            if train_iter_count % logging_period == 0:
+                dropout_info = ""
+                if hasattr(model.dnn, 'concrete_dropout1'):
+                    p1 = torch.sigmoid(model.dnn.concrete_dropout1.p_logit).item()
+                    p2 = torch.sigmoid(model.dnn.concrete_dropout2.p_logit).item()
+                    dropout_info = f"\n    - p1={p1:.3f}, p2={p2:.3f}"
+                
+                print(f"--- Iteration [{train_iter_count}/{total_train_iter}] ---", 
+                      f"Total Loss: {loss.item():.4f}", 
+                      f"NLL: {nll_loss.item():.4f}", 
+                      f"Reg: {regularization_loss.item():.4f}" + dropout_info, 
+                      sep="\n    - ")
+                print(f"Minimum Variance: {min_variance:.2e}")
+
+            # --- Validation step ---
+            if train_iter_count > 0 and train_iter_count % validation_period == 0:
+                print(f"\n--- Validation at iteration {train_iter_count} ---")
+                
+                # Přepneme model do eval, ale musíme zachovat Dropout!
+                model.eval()
+                def enable_dropout(m):
+                    if type(m) == torch.nn.Dropout: m.train()
+                model.apply(enable_dropout)
+                # Pro ConcreteDropout
+                if hasattr(model.dnn, 'train'): model.dnn.train() 
+                
+                val_mse_list = []
+                all_val_x_true, all_val_x_hat, all_val_P_hat = [], [], []
+
+                with torch.no_grad():
+                    for x_true_val, y_meas_val in val_loader:
+                        x_true_val = x_true_val.to(device)
+                        y_meas_val = y_meas_val.to(device)
+                        val_bs, val_sl, _ = x_true_val.shape
+                        
+                        # Monte Carlo Validace
+                        val_trajs = []
+                        for j in range(J_samples):
+                            model.reset(batch_size=val_bs, initial_state=x_true_val[:, 0, :])
+                            curr_x_hats = []
+                            for t in range(1, val_sl):
+                                x_filt, _ = model.step(y_meas_val[:, t, :])
+                                curr_x_hats.append(x_filt)
+                            val_trajs.append(torch.stack(curr_x_hats, dim=1))
+                        
+                        val_ensemble = torch.stack(val_trajs, dim=0) # [J, B, T, D]
+                        val_preds = val_ensemble.mean(dim=0)
+                        val_targets = x_true_val[:, 1:, :]
+                        
+                        # Metriky pro batch
+                        val_mse_list.append(F.mse_loss(val_preds, val_targets).item())
+                        
+                        # Data pro ANEES (pokud je potřeba)
+                        # ... (zjednodušeno pro stručnost, ANEES se počítá stejně jako předtím) ...
+                        # Pro účely "Save Best MSE" stačí MSE list.
+                        
+                        # Pro kompletní výpočet ANEES přidejme data do listů:
+                        diff = val_ensemble - val_preds.unsqueeze(0)
+                        val_covs = (diff.unsqueeze(-1) @ diff.unsqueeze(-2)).mean(dim=0) + 1e-2
+                        
+                        # Rekonstrukce plných trajektorií (včetně t=0)
+                        init_state = x_true_val[:, 0, :].unsqueeze(1)
+                        full_x_hat = torch.cat([init_state, val_preds], dim=1)
+                        P0 = model.system_model.P0.unsqueeze(0).repeat(val_bs, 1, 1).unsqueeze(1)
+                        full_P_hat = torch.cat([P0, val_covs], dim=1)
+                        
+                        all_val_x_true.append(x_true_val.cpu())
+                        all_val_x_hat.append(full_x_hat.cpu())
+                        all_val_P_hat.append(full_P_hat.cpu())
+
+                # Agregace výsledků
+                avg_val_mse = np.mean(val_mse_list)
+                
+                # Výpočet ANEES (Vectorized)
+                # Předpokládám, že calculate_anees_vectorized je dostupná
+                final_x_true = torch.cat(all_val_x_true, dim=0)
+                final_x_hat = torch.cat(all_val_x_hat, dim=0)
+                final_P_hat = torch.cat(all_val_P_hat, dim=0)
+                avg_val_anees = calculate_anees_vectorized(final_x_true, final_x_hat, final_P_hat)
+                
+                print(f"  Average MSE: {avg_val_mse:.4f}, Average ANEES: {avg_val_anees:.4f}")
+                
+                # === STRATEGIE UKLÁDÁNÍ: VŽDY PODLE MSE ===
+                if avg_val_mse < best_val_mse:
+                    print(f"  >>> New Best MSE ({avg_val_mse:.4f})! Saving model. <<<")
+                    best_val_mse = avg_val_mse
+                    best_val_anees = avg_val_anees # Uložíme si odpovídající ANEES
+                    best_iter_count = train_iter_count
+                    
+                    score_at_best['val_mse'] = avg_val_mse
+                    score_at_best['val_anees'] = avg_val_anees
+                    
+                    best_model_state = deepcopy(model.state_dict())
+                
+                print("-" * 50)
+                model.train()
+
+    print("\nTraining completed.")
+    if best_model_state:
+        print(f"Loading best model from iteration {best_iter_count} (MSE={best_val_mse:.4f})")
+        model.load_state_dict(best_model_state)
+    else:
+        print("No best model was saved; returning last state.")
+
+    return {
+        "best_val_anees": best_val_anees,
+        "best_val_mse": score_at_best['val_mse'],
+        "best_iter": best_iter_count,
+        "final_model": model
+    }

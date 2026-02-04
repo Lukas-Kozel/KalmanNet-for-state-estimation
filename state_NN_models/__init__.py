@@ -6,6 +6,7 @@ from .DNN_BayesianKalmanNet import DNN_BayesianKalmanNet
 from .DNN_RNN import DNN_RNN
 from .RNN import RNN
 from . import NCLT
+from . import TAN
 
 __all__ = [
     "DNN_KalmanNet",
@@ -15,5 +16,6 @@ __all__ = [
     "DNN_BayesianKalmanNet",
     "NCLT",
     "DNN_RNN",
-    "RNN"
+    "RNN",
+    "TAN"
 ]
