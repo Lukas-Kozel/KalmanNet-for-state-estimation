@@ -9,6 +9,7 @@ from Filters.ParticleFilterMH import ParticleFilterMH
 from .ParticleFilter import ParticleFilter
 from . import NCLT
 from .AdaptiveKalmanFilter_online import AdaptiveKalmanFilter_online
+from .StructuredAdaptiveKalmanFilter_online import StructuredAdaptiveKalmanFilter
 
 __all__ = [
     "KalmanFilter",
@@ -22,5 +23,6 @@ __all__ = [
     "ParticleFilterMH",
     "ParticleFilter",
     "NCLT",
-    "AdaptiveKalmanFilter_online"
+    "AdaptiveKalmanFilter_online",
+    "StructuredAdaptiveKalmanFilter"
 ]
