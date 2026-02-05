@@ -104,26 +104,50 @@ class StateBayesianKalmanNetTAN(nn.Module):
         return torch.sign(x) * torch.log(torch.abs(x) + 1.0)
     
     def init_weights(self) -> None:
-        """Stabilní inicializace vah."""
-        print("INFO: Aplikuji 'Start Zero' inicializaci pro Kalman Gain.")
-        for name, m in self.dnn.named_modules():
-            if isinstance(m, nn.Linear):
-                init.kaiming_uniform_(m.weight, nonlinearity='relu')
-                if m.bias is not None: init.zeros_(m.bias)
-            elif isinstance(m, nn.LayerNorm):
-                init.constant_(m.bias, 0)
-                init.constant_(m.weight, 1.0)
-            elif isinstance(m, nn.GRU):
-                for param_name, param in m.named_parameters():
-                    if 'weight' in param_name: init.xavier_uniform_(param.data)
-                    elif 'bias' in param_name: param.data.fill_(0)
+            """Stabilní inicializace vah."""
+            print("INFO: Aplikuji upravenou inicializaci pro BKN.")
+            for name, m in self.dnn.named_modules():
+                if isinstance(m, nn.Linear):
+                    # Použijeme kaiming, ale s malým gainem, aby váhy nebyly moc divoké
+                    # Ale NE tak malé, aby zabily gradient
+                    init.kaiming_uniform_(m.weight, a=0.1, nonlinearity='relu') 
+                    if m.bias is not None: init.zeros_(m.bias)
+                
+                elif isinstance(m, nn.LayerNorm):
+                    init.constant_(m.bias, 0)
+                    init.constant_(m.weight, 1.0)
+                
+                elif isinstance(m, nn.GRU):
+                    for param_name, param in m.named_parameters():
+                        if 'weight' in param_name: 
+                            # Ortogonální init je pro GRU nejlepší
+                            init.orthogonal_(param.data) 
+                        elif 'bias' in param_name: 
+                            param.data.fill_(0)
 
-
-        # Inicializace výstupní vrstvy blízko nule
-        if hasattr(self.dnn, 'output_layer') and len(self.dnn.output_layer) > 0:
-            last_layer = self.dnn.output_layer[-1] 
-            if isinstance(last_layer, nn.Linear):
-                init.uniform_(last_layer.weight, -1e-3, 1e-3)
-                if last_layer.bias is not None:
-                    init.zeros_(last_layer.bias)
-                print("DEBUG: Výstupní vrstva vynulována (Soft Start).")
+            # Výstupní vrstva - zde chceme začít s menšími hodnotami, ale ne nulou!
+            if hasattr(self.dnn, 'output_layer') and len(self.dnn.output_layer) > 0:
+                last_layer = self.dnn.output_layer[-1] 
+                if isinstance(last_layer, nn.Linear):
+                    # Změna z 1e-4 na 0.01 nebo 0.1
+                    # To zajistí, že K bude malé (třeba 0.1), ale různé pro každý dropout pass
+                    init.uniform_(last_layer.weight, -0.1, 0.1) 
+                    if last_layer.bias is not None:
+                        init.zeros_(last_layer.bias)
+                    print("DEBUG: Výstupní vrstva inicializována konzervativně (interval -0.1 až 0.1).")
+                    
+    def detach_hidden(self):
+        """
+        Odpojí interní stavy od výpočetního grafu (pro TBPTT).
+        Tím se 'zapomene' historie gradientů, ale hodnoty stavů zůstanou.
+        """
+        if self.x_filtered_t_minus_1 is not None:
+            self.x_filtered_t_minus_1 = self.x_filtered_t_minus_1.detach()
+        if self.x_filtered_t_minus_2 is not None:
+            self.x_filtered_t_minus_2 = self.x_filtered_t_minus_2.detach()
+        if self.x_pred_t_minus_1 is not None:
+            self.x_pred_t_minus_1 = self.x_pred_t_minus_1.detach()
+        if self.y_t_minus_1 is not None:
+            self.y_t_minus_1 = self.y_t_minus_1.detach()
+        if self.h_prev is not None:
+            self.h_prev = self.h_prev.detach()
