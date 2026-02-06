@@ -10,6 +10,9 @@ from .ParticleFilter import ParticleFilter
 from . import NCLT
 from .AdaptiveKalmanFilter_online import AdaptiveKalmanFilter_online
 from .StructuredAdaptiveKalmanFilter_online import StructuredAdaptiveKalmanFilter
+from .VectorizedAuxiliaryParticleFilter import VectorizedAuxiliaryParticleFilter
+from .VectorizedParticleFilter import VectorizedParticleFilter
+from .FastAdaptiveKalmanFilter_online import FastAdaptiveKalmanFilter
 
 __all__ = [
     "KalmanFilter",
@@ -24,5 +27,8 @@ __all__ = [
     "ParticleFilter",
     "NCLT",
     "AdaptiveKalmanFilter_online",
-    "StructuredAdaptiveKalmanFilter"
+    "StructuredAdaptiveKalmanFilter",
+    "VectorizedAuxiliaryParticleFilter",
+    "VectorizedParticleFilter",
+    "FastAdaptiveKalmanFilter"
 ]
