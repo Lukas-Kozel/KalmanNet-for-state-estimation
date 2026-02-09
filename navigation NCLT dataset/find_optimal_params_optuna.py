@@ -9,10 +9,10 @@ import matplotlib.pyplot as plt
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 
 # === KONFIGURACE ===
-DATA_DIR = 'preprocessed_NCLT_trajectory-2012-01-22'
+DATA_DIR = 'preprocessed_NCLT_trajectory-2012-01-22-angle-update'
 DT = 1.0
 SUBSET_LEN = 5000  
-N_TRIALS = 3000     # Dáme tomu hodně pokusů pro jistotu
+N_TRIALS = 4000     # Dáme tomu hodně pokusů pro jistotu
 
 print(f"--- ULTIMÁTNÍ OPTIMALIZACE Q a R ---")
 
@@ -32,6 +32,21 @@ var_gps_base = np.var(residuals[:, [0, 2]])
 var_odo_base = np.var(residuals[:, [1, 3]])
 print(f"Base GPS Var: {var_gps_base:.4f} (Std: {np.sqrt(var_gps_base):.2f}m)")
 print(f"Base ODO Var: {var_odo_base:.4f}")
+
+# 2. Baseline Statistiky & Korelace
+residuals = meas - gt
+cov_matrix_raw = np.cov(residuals, rowvar=False)
+
+# Diagonální variance (to už máš)
+var_gps_base = np.var(residuals[:, [0, 2]]) # Průměr X a Y variance pro GPS
+var_odo_base = np.var(residuals[:, [1, 3]]) # Průměr Vx a Vy variance pro ODO
+
+# Korelace mezi Vx a Vy (odometrie)
+# Indexy v residuals: 0=X, 1=Vx, 2=Y, 3=Vy
+cov_vx_vy = cov_matrix_raw[1, 3]
+corr_vx_vy = cov_vx_vy / np.sqrt(cov_matrix_raw[1,1] * cov_matrix_raw[3,3])
+
+print(f"Korelace chyb rychlosti (Vx vs Vy): {corr_vx_vy:.4f}")
 
 # 3. Rychlá KF implementace (Numpy optimized)
 def run_kf_fast(q_std, r_factor_gps, r_factor_odo):
@@ -60,7 +75,8 @@ def run_kf_fast(q_std, r_factor_gps, r_factor_odo):
     R = np.diag(R_diag)
 
     x = gt[0].copy()
-    P = np.eye(4) * 10.0 # Větší počáteční nejistota
+    # P = np.eye(4) * 10.0 # Větší počáteční nejistota
+    P = np.diag([10,1,10,1])
     
     mse_sum = 0.0
     
