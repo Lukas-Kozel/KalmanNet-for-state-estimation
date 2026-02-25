@@ -2,6 +2,7 @@ import torch
 import numpy as np
 from scipy.stats import multivariate_normal
 import copy
+from tqdm import tqdm
 
 class ParticleFilter:
     """
@@ -60,7 +61,7 @@ class ParticleFilter:
         """Normalizuje váhy tak, aby jejich součet byl 1. Ekvivalent 'normalize_weights' z reference."""
         sum_weights = np.sum(weights)
         if sum_weights < 1e-15:
-            print("Varování: Součet vah je téměř nulový. Resetuji na uniformní rozdělení.")
+            # print("Varování: Součet vah je téměř nulový. Resetuji na uniformní rozdělení.")
             weights.fill(1.0 / self.N)
         else:
             weights /= sum_weights
@@ -99,7 +100,7 @@ class ParticleFilter:
 
         n_threshold = self.N * resampling_threshold
 
-        for k in range(1, seq_len):
+        for k in tqdm(range(1,seq_len), desc="Processing sequence PF"):
             
             propagated_particles = self._propagate_vectorized(current_particles, Q_np)
             

@@ -1,6 +1,7 @@
 import torch
 import numpy as np
 from scipy.stats import multivariate_normal
+from tqdm import tqdm
 
 class AuxiliaryParticleFilter:
     """
@@ -106,7 +107,7 @@ class AuxiliaryParticleFilter:
         P_filtered_history[0] = P_est
         particles_history.append(current_particles.copy())
 
-        for k in range(1, seq_len):
+        for k in tqdm(range(1,seq_len), desc="Processing sequence APF"):
             
             # --- APF Fáze 1: Výpočet pomocných vah ---
             # "Compute Ns point estimates... Then compute weights for these characterizations"

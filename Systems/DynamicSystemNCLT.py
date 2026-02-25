@@ -42,7 +42,18 @@ class DynamicSystemNCLT:
             self.P0 = torch.eye(state_dim).to(self.device)
         else:
             self.P0 = P0.to(self.device)
+        # --- DEFINICE LINEARITY PRO RKN/FILTRY ---
+        self.is_linear_h = True
+        # Matice měření H vybere jen px (index 0) a py (index 1) ze 6D stavu
+        self.H = torch.tensor([
+            [1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0, 0.0, 0.0]
+        ], device=self.device)
 
+        # Funkce f je vzhledem ke stavu x prakticky vzato lineární (bere jen px, py a zbytek přepisuje),
+        # ale pro jistotu (a protože závisí na u_in) můžeme RKN donutit počítat Jakobián.
+        self.is_linear_f = False
+        
         # --- DEFINICE MODELU ---
         # Pokud uživatel nezadá f/h, použijeme model z článku (rovnice 5 a 6)
         if f is None:
