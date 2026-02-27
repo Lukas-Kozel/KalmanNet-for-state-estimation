@@ -5,7 +5,7 @@ import torch.nn.functional as func
 import torch.nn.init as init
 
 class StateBayesianKalmanNet(nn.Module):
-    def __init__(self, system_model, device, hidden_size_multiplier=10, output_layer_multiplier=4, num_gru_layers=1,init_min_dropout=0.5,init_max_dropout=0.8, norm_states=False):
+    def __init__(self, system_model, device, hidden_size_multiplier=10, output_layer_multiplier=4, num_gru_layers=1,init_min_dropout=0.5,init_max_dropout=0.8, norm_states=False, weight_init=True):
         super(StateBayesianKalmanNet, self).__init__()
 
         self.device = device
@@ -21,8 +21,10 @@ class StateBayesianKalmanNet(nn.Module):
             self.dnn.gru.hidden_size, 
             device=self.device
         ).detach()
+        self.Kalman_gain_history = []
         self.reset()
-        self.init_weights()
+        if weight_init:
+            self.init_weights()
 
 
     def reset(self, batch_size=1, initial_state=None):
@@ -44,6 +46,8 @@ class StateBayesianKalmanNet(nn.Module):
 
         # Skrytý stav pro GRU
         self.h_prev = self.h_init_master.expand(-1, batch_size, -1).clone()
+
+        self.Kalman_gain_history = []
 
     def step(self, y_t):
         # 1. PREDIKCE (pro aktuální čas t)
@@ -76,6 +80,7 @@ class StateBayesianKalmanNet(nn.Module):
             K_vec, h_new, regs = self.dnn(state_inno, inovation, diff_state, diff_obs, self.h_prev)
         
         K = K_vec.reshape(-1, self.state_dim, self.obs_dim)
+        self.Kalman_gain_history.append(K.detach().clone())
         correction = torch.bmm(K, inovation.unsqueeze(-1)).squeeze(-1)
         # x_{t|t} = x_{t|t-1} + K * inovace
         x_filtered = x_predicted + correction
@@ -115,3 +120,12 @@ class StateBayesianKalmanNet(nn.Module):
                 if last_layer.bias is not None:
                     init.zeros_(last_layer.bias)
                 print("DEBUG: Výstupní vrstva vynulována (Soft Start).")
+
+    def get_kalman_gain_history(self):
+        """
+        Vrátí historii Kalmanových zisků pro aktuální sekvenci.
+        Výstupní tvar: [sequence_length, batch_size, state_dim, obs_dim]
+        """
+        if not self.Kalman_gain_history:
+            return None
+        return torch.stack(self.Kalman_gain_history)

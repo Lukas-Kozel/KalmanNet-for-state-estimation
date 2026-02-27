@@ -32,7 +32,8 @@ class StateKalmanNet(nn.Module):
         self.x_filtered_prev = None     
         self.x_filtered_prev_prev = None  
         self.x_pred_prev = None         
-        
+        self.K_history = []
+
         self.init_weights()
 
     def reset(self, batch_size=1, initial_state=None):
@@ -55,6 +56,7 @@ class StateKalmanNet(nn.Module):
             self.dnn.gru_hidden_dim, 
             device=self.device
         )
+        self.K_history = []
         
     def step(self,y_t):
         """
@@ -105,7 +107,7 @@ class StateKalmanNet(nn.Module):
         
         K = K_vec.reshape(batch_size, self.state_dim, self.obs_dim)
         # `K` Tvar: [batch_size, state_dim, obs_dim]
-
+        self.K_history.append(K.detach().clone())
         # `innovation.unsqueeze(-1)` -> [batch_size, obs_dim, 1]
         # `K @ ...` -> [batch_size, state_dim, obs_dim] @ [batch_size, obs_dim, 1] -> [batch_size, state_dim, 1]
         correction = (K @ innovation.unsqueeze(-1)).squeeze(-1)
@@ -197,3 +199,12 @@ class StateKalmanNet(nn.Module):
         self.x_filtered_prev = self.x_filtered_prev.detach()
         self.x_filtered_prev_prev = self.x_filtered_prev_prev.detach()
         self.x_pred_prev = self.x_pred_prev.detach()
+    
+    def get_kalman_gain_history(self):
+        """
+        Vrátí historii Kalmanových zisků pro aktuální sekvenci.
+        Výstupní tvar: [sequence_length, batch_size, state_dim, obs_dim]
+        """
+        if not self.K_history:
+            return None
+        return torch.stack(self.K_history)

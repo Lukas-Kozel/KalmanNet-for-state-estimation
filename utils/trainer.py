@@ -444,16 +444,17 @@ def training_session_trajectory_with_gaussian_nll_training_fcn(
     model, train_loader, val_loader, device,
     total_train_iter, learning_rate, clip_grad,
     J_samples, validation_period, logging_period,
-    warmup_iterations=0
+    warmup_iterations=0, store_model_based_on_hybrid_score=False, calibration_parameter=1.0
 ):
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
     best_val_anees = float('inf')
-    score_at_best = {"val_nll": 0.0, "val_mse": 0.0}
+    best_hybrid_score = float('inf')
+    score_at_best = {"val_nll": 0.0, "val_mse": 0.0, "hybrid_score": None}
     best_iter_count = 0
     best_model_state = None
     train_iter_count = 0
     done = False
-
+    state_dim = model.system_model.state_dim
     while not done:
         model.train()
         for x_true_batch, y_meas_batch in train_loader:
@@ -555,18 +556,43 @@ def training_session_trajectory_with_gaussian_nll_training_fcn(
                 avg_val_anees = calculate_anees_vectorized(final_x_true_list, final_x_hat_list, final_P_hat_list)
                 
                 print(f"  Average MSE: {avg_val_mse:.4f}, Average ANEES: {avg_val_anees:.4f}")
-                if not np.isnan(avg_val_anees) and avg_val_anees < best_val_anees and avg_val_anees > 0:
-                    print("  >>> New best VALIDATION ANEES! Saving model. <<<")
-                    best_val_anees = avg_val_anees
-                    best_iter_count = train_iter_count
-                    score_at_best['val_mse'] = avg_val_mse
-                    best_model_state = deepcopy(model.state_dict())
+                
+                # --- LOGIKA UKLÁDÁNÍ MODELU ---
+                if not np.isnan(avg_val_anees) and avg_val_anees > 0:
+                    
+                    if store_model_based_on_hybrid_score:
+                        # NOVÁ LOGIKA: Ukládání na základě Hybrid Score
+                        anees_penalty = abs(avg_val_anees - state_dim)
+                        current_hybrid_score = avg_val_mse + (calibration_parameter * anees_penalty)
+                        print(f"  Hybrid Score: {current_hybrid_score:.4f} (Penalty: {anees_penalty:.4f} * {calibration_parameter})")
+                        
+                        if current_hybrid_score < best_hybrid_score:
+                            print(f"  >>> New best HYBRID SCORE! ({current_hybrid_score:.4f} < {best_hybrid_score:.4f}) Saving model. <<<")
+                            best_hybrid_score = current_hybrid_score
+                            best_val_anees = avg_val_anees
+                            best_iter_count = train_iter_count
+                            score_at_best['val_mse'] = avg_val_mse
+                            score_at_best['hybrid_score'] = current_hybrid_score
+                            best_model_state = deepcopy(model.state_dict())
+                            
+                    else:
+                        # PŮVODNÍ LOGIKA: Ukládání pouze na základě ANEES
+                        if avg_val_anees < best_val_anees:
+                            print("  >>> New best VALIDATION ANEES! Saving model. <<<")
+                            best_val_anees = avg_val_anees
+                            best_iter_count = train_iter_count
+                            score_at_best['val_mse'] = avg_val_mse
+                            best_model_state = deepcopy(model.state_dict())
+                            
                 print("-" * 50)
                 model.train()
 
     print("\nTraining completed.")
     if best_model_state:
-        print(f"Loading best model from iteration {best_iter_count} with ANEES {best_val_anees:.4f}")
+        if store_model_based_on_hybrid_score:
+            print(f"Loading best model from iteration {best_iter_count} with Hybrid Score {best_hybrid_score:.4f} (MSE: {score_at_best['val_mse']:.4f}, ANEES: {best_val_anees:.4f})")
+        else:
+            print(f"Loading best model from iteration {best_iter_count} with ANEES {best_val_anees:.4f}")
         model.load_state_dict(best_model_state)
     else:
         print("No best model was saved; returning last state.")
@@ -575,6 +601,7 @@ def training_session_trajectory_with_gaussian_nll_training_fcn(
         "best_val_anees": best_val_anees,
         "best_val_nll": score_at_best['val_nll'],
         "best_val_mse": score_at_best['val_mse'],
+        "best_hybrid_score": score_at_best.get('hybrid_score', None),
         "best_iter": best_iter_count,
         "final_model": model
     }

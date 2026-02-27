@@ -16,8 +16,8 @@ class DNN_BayesianKalmanNet(nn.Module):
         self.H2 = (self.state_dim * self.obs_dim) * output_layer_multiplier * 1
 
         # Přidání LayerNorm pro stabilizaci vstupů
-        # self.input_norm = nn.LayerNorm(self.input_dim)
-
+        self.input_norm = nn.LayerNorm(self.input_dim)
+        print("loaded with input normalization")
         self.input_layer = nn.Sequential(
             nn.Linear(self.input_dim, self.H1),
             nn.ReLU()
@@ -40,10 +40,10 @@ class DNN_BayesianKalmanNet(nn.Module):
         nn_input = torch.cat([state_inno, inovation, diff_state, diff_obs], dim=1)
 
         # Aplikace normalizace
-        # normalized_input = self.input_norm(nn_input)
+        normalized_input = self.input_norm(nn_input)
 
         # Dropout se aplikuje na normalizovaná data
-        activated_input, reg1 = self.concrete_dropout1(nn_input, self.input_layer)
+        activated_input, reg1 = self.concrete_dropout1(normalized_input, self.input_layer)
 
         out_gru, h_new = self.gru(activated_input.unsqueeze(0), h_prev)
         out_gru_squeezed = out_gru.squeeze(0)
