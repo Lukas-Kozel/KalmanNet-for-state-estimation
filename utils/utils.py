@@ -354,3 +354,31 @@ def generate_data_for_map_safe(system, num_trajectories, seq_len, force_initial_
 
     print(f"Generation Complete. Total attempts: {total_attempts}. Efficiency: {num_trajectories/total_attempts:.1%}")
     return x_data, y_data
+
+import os
+import matplotlib.pyplot as plt
+
+def save_plot_eps(filename, folder_name=""):
+    """
+    Uloží aktuální matplotlib graf jako vektorový .eps soubor.
+    
+    Parametry:
+    filename (str): Název souboru (bez přípony .eps)
+    folder_name (str): Název cílové složky
+    """
+    # Vytvoření složky, pokud neexistuje (na stejné adresářové úrovni)
+    os.makedirs(folder_name, exist_ok=True)
+    
+    # Sestavení absolutní cesty k souboru
+    filepath = os.path.join(folder_name, f"{filename}.eps")
+    
+    # Uložení grafu 
+    # bbox_inches='tight' je klíčové - zabrání oříznutí legendy ležící mimo osu
+    plt.savefig(filepath, format='eps', bbox_inches='tight')
+    print(f"--> Graf byl úspěšně uložen jako vektor: {filepath}")
+
+def save_plot_pdf(filename, folder_name=""):
+    os.makedirs(folder_name, exist_ok=True)
+    filepath = os.path.join(folder_name, f"{filename}.pdf")
+    plt.savefig(filepath, format='pdf', bbox_inches='tight')
+    print(f"--> Graf uložen jako: {filepath}")
