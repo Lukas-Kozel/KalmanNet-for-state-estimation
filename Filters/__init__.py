@@ -17,6 +17,7 @@ from .FastAdaptiveKalmanFilter_online import FastAdaptiveKalmanFilter
 from .K_estimation_Mehra_method import AdaptiveKalmanFilter_mehra
 from .AdaptiveKalmanFilter_default_version import AdaptiveKalmanFilter_default
 from .K_estimation_Mehra_method_offline import AdaptiveKalmanFilter_mehra_offline
+from .AdaptiveKalmanFilter_online_gated import AdaptiveKalmanFilter_online_Gated
 
 __all__ = [
     "KalmanFilter",
@@ -38,5 +39,6 @@ __all__ = [
     "AdaptiveKalmanFilter_online_pytorch",
     "AdaptiveKalmanFilter_mehra",
     "AdaptiveKalmanFilter_default",
-    "AdaptiveKalmanFilter_mehra_offline"
+    "AdaptiveKalmanFilter_mehra_offline",
+    "AdaptiveKalmanFilter_online_Gated"
 ]

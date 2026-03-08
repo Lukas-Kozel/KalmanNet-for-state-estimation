@@ -49,11 +49,11 @@ class KalmanFilter:
         return y_t - self.H @ x_predict
     
     def step(self, y_t):
-        x_filtered, P_filtered, _, _ = self.update_step(self.x_predict_current, y_t, self.P_predict_current)
+        x_filtered, P_filtered, K, _ = self.update_step(self.x_predict_current, y_t, self.P_predict_current)
         x_predict_next, P_predict_next = self.predict_step(x_filtered, P_filtered)
         self.x_predict_current = x_predict_next
         self.P_predict_current = P_predict_next
-        return x_filtered, P_filtered
+        return x_filtered, P_filtered, K
 
     def process_sequence(self, y_seq, Ex0=None, P0=None):
         seq_len = y_seq.shape[0]
@@ -228,8 +228,8 @@ class AdaptiveKalmanFilter_default:
                 print(f"Chyba v RLS aktualizaci: {e}")
                 pass
 
-        x_filt, P_filt = self.kf.step(y_t)
-        return x_filt, P_filt, self.kf.Q, self.kf.R
+        x_filt, P_filt, K_gain = self.kf.step(y_t)
+        return x_filt, P_filt, K_gain, self.kf.Q, self.kf.R
 
     def process_sequence_adaptively(self, y_seq, u_seq=None, Ex0=None, P0=None):
         seq_len = y_seq.shape[0]
@@ -253,6 +253,8 @@ class AdaptiveKalmanFilter_default:
 
         x_hist = torch.zeros(seq_len, self.kf.state_dim, device=self.device)
         P_hist = torch.zeros(seq_len, self.kf.state_dim, self.kf.state_dim, device=self.device)
+
+        kalman_gain_hist = torch.zeros(seq_len, self.kf.state_dim, self.kf.obs_dim, device=self.device)
         Q_hist = []
         R_hist = []
 
@@ -260,16 +262,18 @@ class AdaptiveKalmanFilter_default:
             y_t = y_seq[k]
             u_t = u_seq[k] if u_seq is not None else None
             
-            x, P, Q_curr, R_curr = self.step_adaptive(y_t, u_t)
+            x, P, K_curr, Q_curr, R_curr = self.step_adaptive(y_t, u_t)
             
             x_hist[k] = x.squeeze()
             P_hist[k] = P
+            kalman_gain_hist[k] = K_curr.squeeze()
             Q_hist.append(Q_curr.clone().detach())
             R_hist.append(R_curr.clone().detach())
             
         results_dict = {
             'x_filtered': x_hist,
-            'P_filtered': P_hist
+            'P_filtered': P_hist,
+            'Kalman_gain': kalman_gain_hist
         }
         
         return results_dict, Q_hist, R_hist

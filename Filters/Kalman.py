@@ -1,4 +1,5 @@
 import torch
+from tqdm import tqdm
 
 class KalmanFilter:
     """
@@ -78,7 +79,7 @@ class KalmanFilter:
 
             x_predict_k = Ex0.clone().detach().reshape(self.state_dim, 1)
             P_predict_k = P0.clone().detach()
-            for k in range(seq_len):
+            for k in tqdm(range(seq_len), desc="KF filtrace", leave=False):
                 x_filtered, P_filtered, K, innovation = self.update_step(x_predict_k, y_seq[k], P_predict_k)
 
                 x_predict_k_plus_1, P_predict_k_plus_1 = self.predict_step(x_filtered, P_filtered)

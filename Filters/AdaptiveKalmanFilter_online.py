@@ -51,11 +51,11 @@ class KalmanFilter:
         return y_t - self.H @ x_predict
     
     def step(self, y_t):
-        x_filtered, P_filtered, _, _ = self.update_step(self.x_predict_current, y_t, self.P_predict_current)
+        x_filtered, P_filtered, K, _ = self.update_step(self.x_predict_current, y_t, self.P_predict_current)
         x_predict_next, P_predict_next = self.predict_step(x_filtered, P_filtered)
         self.x_predict_current = x_predict_next
         self.P_predict_current = P_predict_next
-        return x_filtered, P_filtered
+        return x_filtered, P_filtered, K
 
     def process_sequence(self, y_seq, Ex0=None, P0=None):
             seq_len = y_seq.shape[0]
@@ -94,7 +94,8 @@ class AdaptiveKalmanFilter_online:
         """
         self.kf = KalmanFilter(model)
         self.device = model.Q.device
-        
+        self.dtype = model.Q.dtype
+        self.np_dtype = np.float32 if self.dtype == torch.float32 else np.float64
         self.mdm_L = mdm_L
         self.mdm_version = mdm_version
         self.lambda_rls = lambda_rls
@@ -119,7 +120,7 @@ class AdaptiveKalmanFilter_online:
         self.n_params_Q_reduced = 1
         self.n_params_R_reduced = 2
         
-        self.T_R_matrix = np.zeros((self.n_params_R_full, self.n_params_R_reduced))
+        self.T_R_matrix = np.zeros((self.n_params_R_full, self.n_params_R_reduced), dtype=self.np_dtype)
         self.T_R_matrix[0, 0] = 1.0 
         self.T_R_matrix[7, 0] = 1.0 
         self.T_R_matrix[4, 1] = 1.0 
@@ -135,8 +136,8 @@ class AdaptiveKalmanFilter_online:
         r1_init = R0[0,0]
         r2_init = R0[1,1]
         
-        self.alpha_est = np.array([self.q_init, r1_init, r2_init], dtype=np.float64)
-        self.alpha_nom = np.array(self.alpha_nom_val, dtype=np.float64)
+        self.alpha_est = np.array([self.q_init, r1_init, r2_init], dtype=self.np_dtype)
+        self.alpha_nom = np.array(self.alpha_nom_val, dtype=self.np_dtype)
 
 
         # init_sigma_val je RELATIVNÍ nejistota (např. 0.1 = 10%)
@@ -196,9 +197,9 @@ class AdaptiveKalmanFilter_online:
                 
                 F_np = self.kf.F.cpu().numpy()
                 H_np = self.kf.H.cpu().numpy()
-                G_np = np.zeros((self.nw, u_window.shape[1])) # matice pro vstup u 
-                E_np = np.eye(self.nw)
-                D_np = np.eye(self.nv)
+                G_np = np.zeros((self.nw, u_window.shape[1]), dtype=self.np_dtype) # matice pro vstup u 
+                E_np = np.eye(self.nw, dtype=self.np_dtype)
+                D_np = np.eye(self.nv, dtype=self.np_dtype)
                 nz_np = np.array([self.nv])
 
                 # MDM: Výpočet rezidua a regresoru
@@ -247,7 +248,7 @@ class AdaptiveKalmanFilter_online:
                 
                 # RLS Update na znormalizovaných datech
                 dim_obs_rls = H_rls_norm.shape[0]
-                Omega_norm = np.eye(dim_obs_rls)
+                Omega_norm = np.eye(dim_obs_rls, dtype=self.np_dtype)
 
                 S = H_rls_norm @ self.Sigma_RLS @ H_rls_norm.T + Omega_norm
                 
@@ -256,7 +257,7 @@ class AdaptiveKalmanFilter_online:
                 error = y_rls_norm - H_rls_norm @ self.alpha_est
                 self.alpha_est = self.alpha_est + K_gain @ error
                 
-                I_p = np.eye(self.n_params)
+                I_p = np.eye(self.n_params, dtype=self.np_dtype)
                 self.Sigma_RLS = (I_p - K_gain @ H_rls_norm) @ self.Sigma_RLS / self.lambda_rls              
                 
                 q_est = self.alpha_est[0]
@@ -271,16 +272,16 @@ class AdaptiveKalmanFilter_online:
                 R_new = np.diag([r1_est, r2_est, r1_est, r2_est])
                 
                 # Update KF
-                self.kf.Q = torch.from_numpy(Q_new).float().to(self.device)
-                self.kf.R = torch.from_numpy(R_new).float().to(self.device)
+                self.kf.Q = torch.from_numpy(Q_new).to(self.device).to(self.dtype)
+                self.kf.R = torch.from_numpy(R_new).to(self.device).to(self.dtype)
                 
             except Exception as e:
                 print(f"Chyba v RLS aktualizaci: {e}")
                 pass
 
         # standardní krok Kalmanova filtru s aktuálními Q a R
-        x_filt, P_filt = self.kf.step(y_t)
-        return x_filt, P_filt, self.kf.Q, self.kf.R
+        x_filt, P_filt, K = self.kf.step(y_t)
+        return x_filt, P_filt, K, self.kf.Q, self.kf.R
 
     def process_sequence_adaptively(self, y_seq, u_seq=None, Ex0=None, P0=None):
         """
@@ -307,8 +308,9 @@ class AdaptiveKalmanFilter_online:
         self.z_buffer = []
         self.u_buffer = []
 
-        x_hist = torch.zeros(seq_len, self.kf.state_dim, device=self.device)
-        P_hist = torch.zeros(seq_len, self.kf.state_dim, self.kf.state_dim, device=self.device)
+        x_hist = torch.zeros(seq_len, self.kf.state_dim, device=self.device, dtype=self.dtype)
+        P_hist = torch.zeros(seq_len, self.kf.state_dim, self.kf.state_dim, device=self.device, dtype=self.dtype)
+        K_hist = torch.zeros(seq_len, self.kf.state_dim, self.kf.obs_dim, device=self.device, dtype=self.dtype)
         Q_hist = []
         R_hist = []
 
@@ -316,16 +318,18 @@ class AdaptiveKalmanFilter_online:
             y_t = y_seq[k]
             u_t = u_seq[k] if u_seq is not None else None
             
-            x, P, Q_curr, R_curr = self.step_adaptive(y_t, u_t)
+            x, P, K_curr, Q_curr, R_curr = self.step_adaptive(y_t, u_t)
             
             x_hist[k] = x.squeeze()
             P_hist[k] = P
+            K_hist[k] = K_curr
             Q_hist.append(Q_curr.clone().detach())
             R_hist.append(R_curr.clone().detach())
             
         results_dict = {
             'x_filtered': x_hist,
-            'P_filtered': P_hist
+            'P_filtered': P_hist,
+            'Kalman_gain': K_hist
         }
         
         return results_dict, Q_hist, R_hist
