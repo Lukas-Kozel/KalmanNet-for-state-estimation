@@ -5,7 +5,7 @@ import torch.nn.functional as func
 import torch.nn.init as init
 
 class StateBayesianKalmanNet(nn.Module):
-    def __init__(self, system_model, device, hidden_size_multiplier=10, output_layer_multiplier=4, num_gru_layers=1,init_min_dropout=0.5,init_max_dropout=0.8, norm_states=False, weight_init=True):
+    def __init__(self, system_model, device, hidden_size_multiplier=10, output_layer_multiplier=4, num_gru_layers=1,init_min_dropout=0.5,init_max_dropout=0.8, norm_states=False, weight_init=True,apply_layer_norm=True):
         super(StateBayesianKalmanNet, self).__init__()
 
         self.device = device
@@ -13,7 +13,7 @@ class StateBayesianKalmanNet(nn.Module):
         self.state_dim = system_model.state_dim
         self.obs_dim = system_model.obs_dim
         self.norm_states = norm_states
-        self.dnn = DNN_BayesianKalmanNet(system_model, hidden_size_multiplier, output_layer_multiplier, num_gru_layers, init_min_dropout, init_max_dropout).to(device)
+        self.dnn = DNN_BayesianKalmanNet(system_model, hidden_size_multiplier, output_layer_multiplier, num_gru_layers, init_min_dropout, init_max_dropout, apply_layer_norm=apply_layer_norm).to(device)
 
         self.h_init_master = torch.randn(
             self.dnn.gru.num_layers, 
@@ -30,7 +30,7 @@ class StateBayesianKalmanNet(nn.Module):
     def reset(self, batch_size=1, initial_state=None):
         if initial_state is not None:
             # Počáteční stav pro t=0
-            self.x_filtered_t_minus_1 = initial_state.detach().clone()
+            self.x_filtered_t_minus_1 = initial_state.detach().clone().to(self.device)
         else:
             self.x_filtered_t_minus_1 = torch.zeros(batch_size, self.state_dim, device=self.device)
         
@@ -45,7 +45,7 @@ class StateBayesianKalmanNet(nn.Module):
         self.y_t_minus_1 = self.system_model.h(x_pred_t_minus_1).clone().detach()
 
         # Skrytý stav pro GRU
-        self.h_prev = self.h_init_master.expand(-1, batch_size, -1).clone()
+        self.h_prev = self.h_init_master.expand(-1, batch_size, -1).clone().to(self.device)
 
         self.Kalman_gain_history = []
 

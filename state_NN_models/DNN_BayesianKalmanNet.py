@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 class DNN_BayesianKalmanNet(nn.Module):
-    def __init__(self, system_model, hidden_size_multiplier=10, output_layer_multiplier=4, num_gru_layers=1,init_min_dropout=0.5,init_max_dropout=0.8):
+    def __init__(self, system_model, hidden_size_multiplier=10, output_layer_multiplier=4, num_gru_layers=1,init_min_dropout=0.5,init_max_dropout=0.8,apply_layer_norm=True):
         super(DNN_BayesianKalmanNet, self).__init__()
 
         self.state_dim = system_model.state_dim
@@ -15,8 +15,11 @@ class DNN_BayesianKalmanNet(nn.Module):
         self.H1 = (self.state_dim + self.obs_dim) * hidden_size_multiplier * 8
         self.H2 = (self.state_dim * self.obs_dim) * output_layer_multiplier * 1
 
+        self.apply_layer_norm = apply_layer_norm
         # Přidání LayerNorm pro stabilizaci vstupů
-        self.input_norm = nn.LayerNorm(self.input_dim)
+        if apply_layer_norm:
+            self.input_norm = nn.LayerNorm(self.input_dim)
+
         print("loaded with input normalization")
         self.input_layer = nn.Sequential(
             nn.Linear(self.input_dim, self.H1),
@@ -39,11 +42,13 @@ class DNN_BayesianKalmanNet(nn.Module):
 
         nn_input = torch.cat([state_inno, inovation, diff_state, diff_obs], dim=1)
 
-        # Aplikace normalizace
-        normalized_input = self.input_norm(nn_input)
-
-        # Dropout se aplikuje na normalizovaná data
-        activated_input, reg1 = self.concrete_dropout1(normalized_input, self.input_layer)
+        if self.apply_layer_norm:
+            # Aplikace normalizace
+            normalized_input = self.input_norm(nn_input)
+            # Dropout se aplikuje na normalizovaná data
+            activated_input, reg1 = self.concrete_dropout1(normalized_input, self.input_layer)
+        else:
+            activated_input, reg1 = self.concrete_dropout1(nn_input, self.input_layer)
 
         out_gru, h_new = self.gru(activated_input.unsqueeze(0), h_prev)
         out_gru_squeezed = out_gru.squeeze(0)
