@@ -9,9 +9,9 @@ class DNN_BayesianKalmanNetTAN(nn.Module):
         self.obs_dim = system_model.obs_dim
         self.device = system_model.device
 
-        self.input_dim = 2 * self.state_dim + 2 * self.obs_dim
+        self.input_dim = 2 * self.state_dim + 2 * self.obs_dim 
         self.output_dim = self.state_dim * self.obs_dim
-
+        print("initialized with gradient terrain")
         self.H1 = (self.state_dim + self.obs_dim) * hidden_size_multiplier * 8
         self.H2 = (self.state_dim * self.obs_dim) * output_layer_multiplier * 1
 
@@ -37,6 +37,7 @@ class DNN_BayesianKalmanNetTAN(nn.Module):
 
     def forward(self, state_inno, inovation, diff_state, diff_obs, h_prev):
 
+        # Sloučení všech vstupů včetně gradientu
         nn_input = torch.cat([state_inno, inovation, diff_state, diff_obs], dim=1)
 
         # Aplikace normalizace

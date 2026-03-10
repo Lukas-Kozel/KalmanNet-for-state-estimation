@@ -19,40 +19,34 @@ class StateBayesianKalmanNetTAN(nn.Module):
         self.x_filtered_t_minus_2 = None
         self.x_pred_t_minus_1 = None
         self.y_t_minus_1 = None
-        self.h_prev = None
-        
+        self.h_init_master = torch.randn(
+            self.dnn.gru.num_layers, 
+            1,
+            self.dnn.gru.hidden_size, 
+            device=self.device
+        ).detach()
+        self.reset()
         self.init_weights()
 
-
     def reset(self, batch_size=1, initial_state=None):
-        """
-        Inicializuje stavy pro novou sekvenci. 
-        Sjednoceno s deterministickou verzí pro maximální stabilitu.
-        """
         if initial_state is not None:
-            # Detach je důležitý, abychom netahali gradienty z předchozího batche
-            self.x_filtered_t_minus_1 = initial_state.detach().clone().to(self.device)
+            # Počáteční stav pro t=0
+            self.x_filtered_t_minus_1 = initial_state.detach().clone()
         else:
             self.x_filtered_t_minus_1 = torch.zeros(batch_size, self.state_dim, device=self.device)
         
-        # 1. Historie stavů: Na začátku jsou všechny stejné jako initial_state
+        # Pro t=1 budou rozdíly nulové, takže tyto stavy inicializujeme stejně
         self.x_filtered_t_minus_2 = self.x_filtered_t_minus_1.clone()
         
-        # 2. Historie predikce: Nemá smysl volat f(), prostě zkopírujeme init state
-        self.x_pred_t_minus_1 = self.x_filtered_t_minus_1.clone()
+        # Predikovaný stav pro t-1 (x_{t-1|t-2})
+        x_pred_t_minus_1 = self.system_model.f(self.x_filtered_t_minus_2)
+        self.x_pred_t_minus_1 = x_pred_t_minus_1.clone().detach()
         
-        # 3. Historie měření: Dopočítáme h(x)
-        with torch.no_grad():
-            self.y_t_minus_1 = self.system_model.h(self.x_filtered_t_minus_1).detach()
-        
-        # 4. GRU Hidden State: MUSÍ BÝT NULY!
-        # Náhodná inicializace (randn) způsobuje "šok" v prvním kroku.
-        self.h_prev = torch.zeros(
-            self.dnn.gru.num_layers, 
-            batch_size, 
-            self.dnn.gru.hidden_size, 
-            device=self.device
-        )
+        # Měření pro t-1 (y_{t-1})
+        self.y_t_minus_1 = self.system_model.h(x_pred_t_minus_1).clone().detach()
+
+        # Skrytý stav pro GRU
+        self.h_prev = self.h_init_master.expand(-1, batch_size, -1).clone()
 
     def step(self, y_t):
         # 1. PREDIKCE (pro aktuální čas t)
@@ -65,6 +59,7 @@ class StateBayesianKalmanNetTAN(nn.Module):
         if y_predicted.dim() == 1: y_predicted = y_predicted.unsqueeze(-1)
         if y_t.dim() == 1: y_t = y_t.unsqueeze(-1)
 
+        terrain_grad = self.system_model.calculate_terrain_gradient(x_predicted)
         # 2. VÝPOČET VSTUPŮ PRO DNN
         # x_{t-1|t-1} - x_{t-1|t-2}
         state_inno = self.x_filtered_t_minus_1 - self.x_pred_t_minus_1
@@ -104,26 +99,19 @@ class StateBayesianKalmanNetTAN(nn.Module):
         return torch.sign(x) * torch.log(torch.abs(x) + 1.0)
     
     def init_weights(self) -> None:
-            """Stabilní inicializace vah."""
-            print("INFO: Aplikuji upravenou inicializaci pro BKN.")
-            for name, m in self.dnn.named_modules():
-                if isinstance(m, nn.Linear):
-                    # Použijeme kaiming, ale s malým gainem, aby váhy nebyly moc divoké
-                    # Ale NE tak malé, aby zabily gradient
-                    init.kaiming_uniform_(m.weight, a=0.1, nonlinearity='relu') 
-                    if m.bias is not None: init.zeros_(m.bias)
-                
-                elif isinstance(m, nn.LayerNorm):
-                    init.constant_(m.bias, 0)
-                    init.constant_(m.weight, 1.0)
-                
-                elif isinstance(m, nn.GRU):
-                    for param_name, param in m.named_parameters():
-                        if 'weight' in param_name: 
-                            # Ortogonální init je pro GRU nejlepší
-                            init.orthogonal_(param.data) 
-                        elif 'bias' in param_name: 
-                            param.data.fill_(0)
+        """Stabilní inicializace vah."""
+        print("INFO: Aplikuji 'Start Zero' inicializaci pro Kalman Gain.")
+        for name, m in self.dnn.named_modules():
+            if isinstance(m, nn.Linear):
+                init.kaiming_uniform_(m.weight, nonlinearity='relu')
+                if m.bias is not None: init.zeros_(m.bias)
+            elif isinstance(m, nn.LayerNorm):
+                init.constant_(m.bias, 0)
+                init.constant_(m.weight, 1.0)
+            elif isinstance(m, nn.GRU):
+                for param_name, param in m.named_parameters():
+                    if 'weight' in param_name: init.xavier_uniform_(param.data)
+                    elif 'bias' in param_name: param.data.fill_(0)
 
             # Výstupní vrstva - zde chceme začít s menšími hodnotami, ale ne nulou!
             if hasattr(self.dnn, 'output_layer') and len(self.dnn.output_layer) > 0:
@@ -131,10 +119,10 @@ class StateBayesianKalmanNetTAN(nn.Module):
                 if isinstance(last_layer, nn.Linear):
                     # Změna z 1e-4 na 0.01 nebo 0.1
                     # To zajistí, že K bude malé (třeba 0.1), ale různé pro každý dropout pass
-                    init.uniform_(last_layer.weight, -0.1, 0.1) 
+                    init.uniform_(last_layer.weight, -1e-1, 1e-1) 
                     if last_layer.bias is not None:
                         init.zeros_(last_layer.bias)
-                    print("DEBUG: Výstupní vrstva inicializována konzervativně (interval -0.1 až 0.1).")
+                    print("DEBUG: Výstupní vrstva inicializována konzervativně (interval -0.01 až 0.01).")
                     
     def detach_hidden(self):
         """
