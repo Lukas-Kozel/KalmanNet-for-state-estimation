@@ -459,7 +459,8 @@ def training_session_trajectory_with_gaussian_nll_training_fcn(
         model.train()
         for x_true_batch, y_meas_batch in train_loader:
             if train_iter_count >= total_train_iter: done = True; break
-            
+            x_true_batch = x_true_batch.to(device)
+            y_meas_batch = y_meas_batch.to(device)
             # --- Training ---
             optimizer.zero_grad()
             batch_size, seq_len, _ = x_true_batch.shape
@@ -515,7 +516,8 @@ def training_session_trajectory_with_gaussian_nll_training_fcn(
                 with torch.no_grad():
                     for x_true_val_batch, y_meas_val_batch in val_loader:
                         val_batch_size, val_seq_len, _ = x_true_val_batch.shape
-                        
+                        x_true_val_batch = x_true_val_batch.to(device)
+                        y_meas_val_batch = y_meas_val_batch.to(device)
                         val_ensemble_trajectories = []
                         for j in range(J_samples):
                             model.reset(batch_size=val_batch_size, initial_state=x_true_val_batch[:, 0, :])
