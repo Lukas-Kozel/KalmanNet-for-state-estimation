@@ -14,7 +14,6 @@ class StateBayesianKalmanNetTAN(nn.Module):
 
         self.dnn = DNN_BayesianKalmanNetTAN(system_model, hidden_size_multiplier, output_layer_multiplier, num_gru_layers, init_min_dropout, init_max_dropout).to(device)
 
-        # Interní stavy
         self.x_filtered_t_minus_1 = None
         self.x_filtered_t_minus_2 = None
         self.x_pred_t_minus_1 = None
@@ -30,37 +29,29 @@ class StateBayesianKalmanNetTAN(nn.Module):
 
     def reset(self, batch_size=1, initial_state=None):
         if initial_state is not None:
-            # Počáteční stav pro t=0
             self.x_filtered_t_minus_1 = initial_state.detach().clone()
         else:
             self.x_filtered_t_minus_1 = torch.zeros(batch_size, self.state_dim, device=self.device)
         
-        # Pro t=1 budou rozdíly nulové, takže tyto stavy inicializujeme stejně
         self.x_filtered_t_minus_2 = self.x_filtered_t_minus_1.clone()
         
-        # Predikovaný stav pro t-1 (x_{t-1|t-2})
+
         x_pred_t_minus_1 = self.system_model.f(self.x_filtered_t_minus_2)
         self.x_pred_t_minus_1 = x_pred_t_minus_1.clone().detach()
         
-        # Měření pro t-1 (y_{t-1})
         self.y_t_minus_1 = self.system_model.h(x_pred_t_minus_1).clone().detach()
 
-        # Skrytý stav pro GRU
         self.h_prev = self.h_init_master.expand(-1, batch_size, -1).clone()
 
     def step(self, y_t):
-        # 1. PREDIKCE (pro aktuální čas t)
         # x_{t|t-1} = f(x_{t-1|t-1})
         x_predicted = self.system_model.f(self.x_filtered_t_minus_1)
         # y_{t|t-1} = h(x_{t|t-1})
         y_predicted = self.system_model.h(x_predicted)
 
-        # Ošetření dimenzí
         if y_predicted.dim() == 1: y_predicted = y_predicted.unsqueeze(-1)
         if y_t.dim() == 1: y_t = y_t.unsqueeze(-1)
 
-        terrain_grad = self.system_model.calculate_terrain_gradient(x_predicted)
-        # 2. VÝPOČET VSTUPŮ PRO DNN
         # x_{t-1|t-1} - x_{t-1|t-2}
         state_inno = self.x_filtered_t_minus_1 - self.x_pred_t_minus_1
         norm_state_inno = self.log_modulus(state_inno)
@@ -74,33 +65,26 @@ class StateBayesianKalmanNetTAN(nn.Module):
         diff_obs = y_t - self.y_t_minus_1
         norm_diff_obs = self.log_modulus(diff_obs)
 
-        # 3. PRŮCHOD SÍTÍ A KOREKCE
         K_vec, h_new, regs = self.dnn(norm_state_inno, norm_innovation, norm_diff_state, norm_diff_obs, self.h_prev)
         
         K = K_vec.reshape(-1, self.state_dim, self.obs_dim)
         # K = torch.clamp(K, min=-5.0, max=5.0)
         correction = torch.bmm(K, inovation.unsqueeze(-1)).squeeze(-1)
-        # x_{t|t} = x_{t|t-1} + K * inovace
+        # x_{t|t} = x_{t|t-1} + K * inovation
         x_filtered = x_predicted + correction
         
-        # 4. AKTUALIZACE STAVŮ PRO PŘÍŠTÍ VOLÁNÍ (pro t+1)
-        # Posuneme stavy v čase
         self.x_filtered_t_minus_2 = self.x_filtered_t_minus_1.detach()
-        self.x_filtered_t_minus_1 = x_filtered.detach() # .clone() není nutné
+        self.x_filtered_t_minus_1 = x_filtered.detach()
         self.x_pred_t_minus_1 = x_predicted.detach()
         self.y_t_minus_1 = y_t.detach()
         self.h_prev = h_new.detach()
         
         return x_filtered, regs
     
-    # --- POMOCNÁ FUNKCE: LOG MODULUS ---
     def log_modulus(self, x):
-        """Log-compression zachovávající znaménko."""
         return torch.sign(x) * torch.log(torch.abs(x) + 1.0)
     
     def init_weights(self) -> None:
-        """Stabilní inicializace vah."""
-        print("INFO: Aplikuji 'Start Zero' inicializaci pro Kalman Gain.")
         for name, m in self.dnn.named_modules():
             if isinstance(m, nn.Linear):
                 init.kaiming_uniform_(m.weight, nonlinearity='relu')
@@ -113,22 +97,14 @@ class StateBayesianKalmanNetTAN(nn.Module):
                     if 'weight' in param_name: init.xavier_uniform_(param.data)
                     elif 'bias' in param_name: param.data.fill_(0)
 
-            # Výstupní vrstva - zde chceme začít s menšími hodnotami, ale ne nulou!
             if hasattr(self.dnn, 'output_layer') and len(self.dnn.output_layer) > 0:
                 last_layer = self.dnn.output_layer[-1] 
                 if isinstance(last_layer, nn.Linear):
-                    # Změna z 1e-4 na 0.01 nebo 0.1
-                    # To zajistí, že K bude malé (třeba 0.1), ale různé pro každý dropout pass
                     init.uniform_(last_layer.weight, -1e-1, 1e-1) 
                     if last_layer.bias is not None:
                         init.zeros_(last_layer.bias)
-                    print("DEBUG: Výstupní vrstva inicializována konzervativně (interval -0.01 až 0.01).")
                     
     def detach_hidden(self):
-        """
-        Odpojí interní stavy od výpočetního grafu (pro TBPTT).
-        Tím se 'zapomene' historie gradientů, ale hodnoty stavů zůstanou.
-        """
         if self.x_filtered_t_minus_1 is not None:
             self.x_filtered_t_minus_1 = self.x_filtered_t_minus_1.detach()
         if self.x_filtered_t_minus_2 is not None:
