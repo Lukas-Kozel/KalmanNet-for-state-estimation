@@ -57,6 +57,7 @@ class AdaptiveKalmanFilter_mehra_offline:
         print(f"Iterace 0 (Nástřel): K[0,0] = {self.K[0,0].item():.4f}")
         # Opakujeme proces filtrace a odhadu M-krát
         for m in tqdm(range(self.num_iterations), desc="Offline filtrace s adaptivním K", leave=False):
+            # print(f"\nIterace {m+1}/{self.num_iterations}:")
             # 1. Kontrola stability aktuálního K
             A = self.F - self.F @ self.K @ self.H
 

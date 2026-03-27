@@ -1,12 +1,13 @@
 import torch
 import numpy as np
-from MDM.MDM_functions import MDM_nullO_LTI, pinv, Ksi_fun, baseMatrix_fun, Upsilon_2_fun, kron2_vec, kron2_mat
+from MDM.MDM_functions import (MDM_nullO_LTI, Ksi_fun, baseMatrix_fun, 
+                               Upsilon_2_fun, kron2_vec, kron2_mat)
 
 class KalmanFilter:
     """
     Kalmanův filtr pro t-invaritantní systém s lineární dynamikou.
     """
-    def __init__(self,model):
+    def __init__(self, model):
         self.device = model.Q.device
         self.model = model
         self.Ex0 = model.Ex0  # očekávaná hodnota počátečního stavu
@@ -48,7 +49,6 @@ class KalmanFilter:
     def compute_kalman_gain(self, P_predict):
         return P_predict @ self.H.T @ torch.linalg.inv(self.H @ P_predict @ self.H.T + self.R)
         
-    
     def compute_innovation(self, y_t, x_predict):
         return y_t - self.H @ x_predict
     
@@ -58,7 +58,6 @@ class KalmanFilter:
         Vrací nejlepší odhad pro aktuální čas 't'.
         """
         x_filtered, P_filtered, _, _ = self.update_step(self.x_predict_current, y_t, self.P_predict_current)
-
         x_predict_next, P_predict_next = self.predict_step(x_filtered, P_filtered)
 
         self.x_predict_current = x_predict_next
@@ -67,42 +66,42 @@ class KalmanFilter:
         return x_filtered, P_filtered
 
     def process_sequence(self, y_seq, Ex0=None, P0=None):
-            """
-            Zpracuje celou sekvenci měření `y_seq` (offline) a vrátí detailní historii.
-            """
+        """
+        Zpracuje celou sekvenci měření `y_seq` (offline) a vrátí detailní historii.
+        """
+        seq_len = y_seq.shape[0]
 
-            seq_len = y_seq.shape[0]
+        x_filtered_history = torch.zeros(seq_len, self.state_dim, device=self.device)
+        P_filtered_history = torch.zeros(seq_len, self.state_dim, self.state_dim, device=self.device)
+        kalman_gain_history = torch.zeros(seq_len, self.state_dim, self.obs_dim, device=self.device)
+        innovation_history = torch.zeros(seq_len, self.obs_dim, device=self.device)
 
-            x_filtered_history = torch.zeros(seq_len, self.state_dim, device=self.device)
-            P_filtered_history = torch.zeros(seq_len, self.state_dim, self.state_dim, device=self.device)
-            kalman_gain_history = torch.zeros(seq_len, self.state_dim, self.obs_dim, device=self.device)
-            innovation_history = torch.zeros(seq_len, self.obs_dim, device=self.device)
+        if Ex0 is None:
+            Ex0 = self.Ex0
+        if P0 is None:
+            P0 = self.P0
+        
+        x_predict_k = Ex0.clone().detach().reshape(self.state_dim, 1)
+        P_predict_k = P0.clone().detach()
+        
+        for k in range(seq_len):
+            x_filtered, P_filtered, K, innovation = self.update_step(x_predict_k, y_seq[k], P_predict_k)
+            x_predict_k_plus_1, P_predict_k_plus_1 = self.predict_step(x_filtered, P_filtered)
 
-            if Ex0 is None:
-                Ex0 = self.Ex0
-            if P0 is None:
-                P0 = self.P0
-            x_predict_k = Ex0.clone().detach().reshape(self.state_dim, 1)
-            P_predict_k = P0.clone().detach()
-            for k in range(seq_len):
-                x_filtered, P_filtered, K, innovation = self.update_step(x_predict_k, y_seq[k], P_predict_k)
+            x_predict_k = x_predict_k_plus_1
+            P_predict_k = P_predict_k_plus_1
 
-                x_predict_k_plus_1, P_predict_k_plus_1 = self.predict_step(x_filtered, P_filtered)
+            x_filtered_history[k] = x_filtered.squeeze()
+            P_filtered_history[k] = P_filtered
+            kalman_gain_history[k] = K
+            innovation_history[k] = innovation.squeeze()
 
-                x_predict_k = x_predict_k_plus_1
-                P_predict_k = P_predict_k_plus_1
-
-                x_filtered_history[k] = x_filtered.squeeze()
-                P_filtered_history[k] = P_filtered
-                kalman_gain_history[k] = K
-                innovation_history[k] = innovation.squeeze()
-
-            return {
-                'x_filtered': x_filtered_history,
-                'P_filtered': P_filtered_history,
-                'Kalman_gain': kalman_gain_history,
-                'innovation': innovation_history
-            }
+        return {
+            'x_filtered': x_filtered_history,
+            'P_filtered': P_filtered_history,
+            'Kalman_gain': kalman_gain_history,
+            'innovation': innovation_history
+        }
     
 class AdaptiveKalmanFilter:
     def __init__(self, model, mdm_L=2, mdm_version=2):
@@ -117,49 +116,19 @@ class AdaptiveKalmanFilter:
         self.mdm_L = mdm_L # delka posuvneho okna pro MDM
         self.mdm_version = mdm_version
 
-    def _reconstruct_qr_from_alpha2(self, alpha_2, nw, nv):
-        """
-        Pomocná funkce pro rekonstrukci matic Q a R z vektoru alpha_2.
-        """
-        # Počet unikátních prvků v symetrických maticích Q a R
-        q_elements_count = nw * (nw + 1) // 2
-        
-        # Extrahujeme prvky pro Q a R
-        alpha_q = alpha_2[:q_elements_count]
-        alpha_r = alpha_2[q_elements_count : q_elements_count + (nv * (nv + 1) // 2)]
-        
-        # Rekonstrukce Q
-        Q_est = np.zeros((nw, nw))
-        i, j = np.triu_indices(nw)
-        Q_est[i, j] = alpha_q
-        Q_est[j, i] = alpha_q
-        
-        # Rekonstrukce R
-        R_est = np.zeros((nv, nv))
-        i, j = np.triu_indices(nv)
-        R_est[i, j] = alpha_r
-        R_est[j, i] = alpha_r
-        
-        return Q_est, R_est
-
     def estimate_qr_from_data(self, y_seq, u_seq=None):
         """
-        Provede odhad Q a R z balíku dat pomocí MDM.
-        :param y_seq: Sekvence měření (PyTorch tensor).
-        :param u_seq: Sekvence vstupů (PyTorch tensor), pokud existuje.
+        Provede robustní odhad Q a R z balíku dat pomocí offline MDM.
         """
         print("Spouštím MDM odhad Q a R...")
         
         # KROK 1: Konverze PyTorch -> NumPy
-        F_np = self.kf.F.cpu().numpy() # převod F na numpy
-        H_np = self.kf.H.cpu().numpy() # převod H na numpy
-        z_np = y_seq.cpu().numpy().squeeze() # převod měření na numpy 
-
-        # Ujistíme se, že z_np má správný tvar (N, obs_dim)
+        F_np = self.kf.F.cpu().numpy()
+        H_np = self.kf.H.cpu().numpy()
+        z_np = y_seq.cpu().numpy().squeeze()
         if z_np.ndim == 1:
             z_np = z_np.reshape(-1, 1)
 
-        # Pro G, E, D předpokládáme, že jsou součástí modelu
         G_np = np.zeros((F_np.shape[0], 1)) 
         E_np = np.eye(F_np.shape[0])
         D_np = np.eye(H_np.shape[0])
@@ -175,68 +144,77 @@ class AdaptiveKalmanFilter:
         nz_np = np.array([nv])
 
         # KROK 2: Spuštění MDM algoritmu
-
-        # r je realizace MDM statistky, což ve článku je označeno jako Z^~_k (rovnice 11). Není to jen reziduum jako y-hx, ale 
-        # je to zkonstruovaný vektor tak, aby byl přímou lineární funkcí systémových šumů.
-
-        # AWv je transformační matice ve článku označena jako A_k (rovnice 13). 
-        # Popisuje přesný matematický vztah mezi šumy a statistikou r. Platí r[k] ≈ Awv @ [w[k]; v[k]].
-        # Je to klíč, který nám později umožní z vlastností r odvodit vlastnosti w a v.
         r, Awv = MDM_nullO_LTI(self.mdm_L, F_np, G_np, E_np, nz_np, H_np, D_np, z_np, u_np, self.mdm_version)
         
-
-        r0 = np.array(r).squeeze() # převod r na numpy pole
+        # KROK 3: Centrování statistiky (Klíčové pro odstranění biasu z počátečního stavu)
+        r0 = np.array(r).squeeze()
+        if r0.ndim == 1:
+            r0 = r0[:, np.newaxis]
+            
+        r0 = r0 - np.mean(r0, axis=0) # Zabrání explozi vlivem počáteční odchylky x0
+        
         Np = r0.shape[0]
         nr = r0.shape[1]
-        
-        # Ksi je selektorová matice.
-        # Ksi slouží k tomu, abychom z "natažené" kovarianční matice vybrali jen unikátní prvky (např. ty na a nad diagonálou). 
-        Ksi = Ksi_fun(nr) 
-
-        #  kron2_vec udělá r[i] @ r[i].T a výsledek natáhne do vektoru. Ksi z něj pak vybere unikátní prvky
+        Ksi = Ksi_fun(nr)
         r02 = np.array([Ksi @ kron2_vec(r0[i]) for i in range(Np)])
 
-        # sestavení matice A. 
+        # Dynamická konstrukce bází
         w2b = [baseMatrix_fun(nw, 1)]
         v2b = [baseMatrix_fun(nv, 1)]
-        Upsilon_2 = Upsilon_2_fun(w2b, v2b, self.mdm_L)
-
-        # popisuje jak se neznámé prvky Q a R promítají do druhého momentu statistiky r, rovnice (21) ve článku.
+            
+        Upsilon_2 = Upsilon_2_fun(w2b, v2b, self.mdm_L)   
         Awv2u = Ksi @ kron2_mat(Awv) @ Upsilon_2
+            
+        # KROK 4: Řešení s regularizací (rcond odstraní šumové, kolineární dimenze)
+        alpha_2 = np.linalg.pinv(Awv2u, rcond=1e-3) @ np.mean(r02, axis=0)
 
-        # řešení sestavené rovnice 
-        # Toto je finální řešení soustavy y = A * x. - řešení MNČ.
-        # výsledný hledaný vektor, který obsahuje odhadnuté prvky matic Q a R, ve článku je to R̂_ε^U,m z rovnice (24).
-        alpha_2 = pinv(Awv2u) @ np.mean(r02, axis=0) 
+        # KROK 5: Rekonstrukce
+        q_len = w2b[0].shape[0]
+        r_len = v2b[0].shape[0]
         
-        # rekonstrukce matic Q a R z vektoru alpha_2
-        Q_est_np, R_est_np = self._reconstruct_qr_from_alpha2(alpha_2, nw, nv)
+        alpha_q = alpha_2[:q_len].flatten()
+        alpha_r = alpha_2[q_len : q_len + r_len].flatten()
+        
+        Q_est_np = np.tensordot(alpha_q, w2b[0], axes=([0], [0]))
+        R_est_np = np.tensordot(alpha_r, v2b[0], axes=([0], [0]))
+        
+        # KROK 6: Projekce na fyzikálně platné (Positive Semi-Definite) matice
+        # Zaručí, že rozptyly nebudou záporné
+        def make_psd(mat):
+            mat = (mat + mat.T) / 2.0
+            evals, evecs = np.linalg.eigh(mat)
+            evals[evals < 0] = 1e-6 # Vynucení nezápornosti
+            return evecs @ np.diag(evals) @ evecs.T
+
+        Q_est_np = make_psd(Q_est_np)
+        R_est_np = make_psd(R_est_np)
         
         print("MDM odhad dokončen.")
-        print("Odhadnuté Q:\n", Q_est_np)
-        print("Odhadnuté R:\n", R_est_np)
+        print("Odhadnuté Q:\n", np.round(Q_est_np, 4))
+        print("Odhadnuté R:\n", np.round(R_est_np, 4))
 
         Q_est_torch = torch.from_numpy(Q_est_np).float().to(self.device)
         R_est_torch = torch.from_numpy(R_est_np).float().to(self.device)
 
         return Q_est_torch, R_est_torch
-
     def update_qr_matrices(self, new_Q, new_R):
         """Aktualizuje matice Q a R v interním Kalmanově filtru."""
         self.kf.Q = new_Q
         self.kf.R = new_R
-        print("Matice Q a R v Kalmanově filtru byly aktualizovány.")
+
+    def process_sequence_with_qr(self, y_seq, Q, R, Ex0=None, P0=None):
+        """
+        Nastaví poskytnuté Q a R a provede inferenci KF nad testovací trajektorií.
+        Tuto metodu volej během testování.
+        """
+        self.update_qr_matrices(Q, R)
+        results = self.kf.process_sequence(y_seq, Ex0=Ex0, P0=P0)
+        return results
 
     def process_sequence_adaptively(self, y_seq, u_seq=None):
         """
-        Kompletní adaptivní proces: odhad Q,R a následná filtrace.
+        Kompletní adaptivní proces: odhad Q, R z dat a následná filtrace nad těmi samými daty.
         """
-        # Fáze 1: Odhad
         Q_est, R_est = self.estimate_qr_from_data(y_seq, u_seq)
-
-        # Fáze 2: Aktualizace a filtrace
-        self.update_qr_matrices(Q_est, R_est)
-        
-        # Nyní spustíme filtraci s novými, odhadnutými maticemi
-        results = self.kf.process_sequence(y_seq)
+        results = self.process_sequence_with_qr(y_seq, Q_est, R_est)
         return results, Q_est, R_est
