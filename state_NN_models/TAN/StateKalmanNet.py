@@ -12,7 +12,8 @@ class StateKalmanNetTAN(nn.Module):
                  hidden_size_multiplier=10, 
                  output_layer_multiplier=4, 
                  num_gru_layers=1,
-                 gru_hidden_dim_multiplier=1):
+                 gru_hidden_dim_multiplier=1,
+                 use_log_modulus=False):
         
         super(StateKalmanNetTAN, self).__init__()
         
@@ -21,7 +22,7 @@ class StateKalmanNetTAN(nn.Module):
         self.system_model = system_model
         self.state_dim = system_model.state_dim
         self.obs_dim = system_model.obs_dim
-
+        self.use_log_modulus = use_log_modulus
 
         self.dnn = DNN_KalmanNetTAN(
             system_model, 
@@ -93,21 +94,17 @@ class StateKalmanNetTAN(nn.Module):
 
         # Normalizace (pokud používáš log, musíš ošetřit nuly/záporná čísla)
         # Zde necháváme identitu dle tvého kódu
-        # norm_obs_diff = func.normalize(obs_diff, p=2, dim=1, eps=1e-12)
-        # norm_innovation = func.normalize(innovation, p=2, dim=1, eps=1e-12)
-        # norm_fw_evol_diff = func.normalize(fw_evol_diff, p=2, dim=1, eps=1e-12)
-        # norm_fw_update_diff = func.normalize(fw_update_diff, p=2, dim=1, eps=1e-12)
-            # Uvnitř step():
-        # Zahoď func.normalize!
-        norm_obs_diff = self.log_modulus(obs_diff)
-        norm_innovation = self.log_modulus(innovation)
-        norm_fw_evol_diff = self.log_modulus(fw_evol_diff)
-        norm_fw_update_diff = self.log_modulus(fw_update_diff)
+        if self.use_log_modulus:
+            norm_obs_diff = self.log_modulus(obs_diff)
+            norm_innovation = self.log_modulus(innovation)
+            norm_fw_evol_diff = self.log_modulus(fw_evol_diff)
+            norm_fw_update_diff = self.log_modulus(fw_update_diff)
+        else:
+            norm_obs_diff = func.normalize(obs_diff, p=2, dim=1, eps=1e-12)
+            norm_innovation = func.normalize(innovation, p=2, dim=1, eps=1e-12)
+            norm_fw_evol_diff = func.normalize(fw_evol_diff, p=2, dim=1, eps=1e-12)
+            norm_fw_update_diff = func.normalize(fw_update_diff, p=2, dim=1, eps=1e-12)
 
-        # norm_obs_diff = obs_diff
-        # norm_innovation = innovation
-        # norm_fw_evol_diff = fw_evol_diff
-        # norm_fw_update_diff = fw_update_diff
         
         # Bezpečnostní checky (nyní by měly projít i s NaN na vstupu, protože jsme je vymaskovali)
         if not torch.all(torch.isfinite(self.h_prev)):

@@ -2,15 +2,18 @@ from .DNN_BayesianKalmanNet import DNN_BayesianKalmanNetTAN
 import torch
 import torch.nn as nn
 import torch.nn.init as init
+import torch.nn.functional as func
 
 class StateBayesianKalmanNetTAN(nn.Module):
-    def __init__(self, system_model, device, hidden_size_multiplier=10, output_layer_multiplier=4, num_gru_layers=1,init_min_dropout=0.5,init_max_dropout=0.8):
+    def __init__(self, system_model, device, hidden_size_multiplier=10, output_layer_multiplier=4, num_gru_layers=1,
+                 init_min_dropout=0.5,init_max_dropout=0.8,use_log_modulus=False):
         super(StateBayesianKalmanNetTAN, self).__init__()
 
         self.device = device
         self.system_model = system_model
         self.state_dim = system_model.state_dim
         self.obs_dim = system_model.obs_dim
+        self.use_log_modulus = use_log_modulus
 
         self.dnn = DNN_BayesianKalmanNetTAN(system_model, hidden_size_multiplier, output_layer_multiplier, num_gru_layers, init_min_dropout, init_max_dropout).to(device)
 
@@ -54,16 +57,27 @@ class StateBayesianKalmanNetTAN(nn.Module):
 
         # x_{t-1|t-1} - x_{t-1|t-2}
         state_inno = self.x_filtered_t_minus_1 - self.x_pred_t_minus_1
-        norm_state_inno = self.log_modulus(state_inno)
-        # y_t - y_{t|t-1}
         inovation = y_t - y_predicted
-        norm_innovation = self.log_modulus(inovation)
-        # x_{t-1|t-1} - x_{t-2|t-2}
         diff_state = self.x_filtered_t_minus_1 - self.x_filtered_t_minus_2
-        norm_diff_state = self.log_modulus(diff_state)
-        # y_t - y_{t-1}
         diff_obs = y_t - self.y_t_minus_1
-        norm_diff_obs = self.log_modulus(diff_obs)
+
+        if self.use_log_modulus:
+            norm_state_inno = self.log_modulus(state_inno)
+            # y_t - y_{t|t-1}
+            
+            norm_innovation = self.log_modulus(inovation)
+            # x_{t-1|t-1} - x_{t-2|t-2}
+
+            norm_diff_state = self.log_modulus(diff_state)
+            # y_t - y_{t-1}
+
+            norm_diff_obs = self.log_modulus(diff_obs)
+        else:
+            norm_state_inno = func.normalize(state_inno, p=2, dim=1, eps=1e-12)
+            norm_innovation = func.normalize(inovation, p=2, dim=1, eps=1e-12)
+            norm_diff_state = func.normalize(diff_state, p=2, dim=1, eps=1e-12)
+            norm_diff_obs = func.normalize(diff_obs, p=2, dim=1, eps=1e-12)
+
 
         K_vec, h_new, regs = self.dnn(norm_state_inno, norm_innovation, norm_diff_state, norm_diff_obs, self.h_prev)
         
