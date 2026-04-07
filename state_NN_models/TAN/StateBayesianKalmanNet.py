@@ -6,7 +6,7 @@ import torch.nn.functional as func
 
 class StateBayesianKalmanNetTAN(nn.Module):
     def __init__(self, system_model, device, hidden_size_multiplier=10, output_layer_multiplier=4, num_gru_layers=1,
-                 init_min_dropout=0.5,init_max_dropout=0.8,use_log_modulus=False):
+                 init_min_dropout=0.5,init_max_dropout=0.8,use_log_modulus=False, use_terrain_grad=True): # <--- NEW ARGUMENT
         super(StateBayesianKalmanNetTAN, self).__init__()
 
         self.device = device
@@ -14,8 +14,18 @@ class StateBayesianKalmanNetTAN(nn.Module):
         self.state_dim = system_model.state_dim
         self.obs_dim = system_model.obs_dim
         self.use_log_modulus = use_log_modulus
+        self.use_terrain_grad = use_terrain_grad # <--- STORE FLAG
 
-        self.dnn = DNN_BayesianKalmanNetTAN(system_model, hidden_size_multiplier, output_layer_multiplier, num_gru_layers, init_min_dropout, init_max_dropout).to(device)
+        # Pass the flag down to the Bayesian DNN
+        self.dnn = DNN_BayesianKalmanNetTAN(
+            system_model, 
+            hidden_size_multiplier, 
+            output_layer_multiplier, 
+            num_gru_layers, 
+            init_min_dropout, 
+            init_max_dropout,
+            use_terrain_grad=self.use_terrain_grad # <--- PASSED TO DNN
+        ).to(device)
 
         self.x_filtered_t_minus_1 = None
         self.x_filtered_t_minus_2 = None
@@ -38,7 +48,6 @@ class StateBayesianKalmanNetTAN(nn.Module):
         
         self.x_filtered_t_minus_2 = self.x_filtered_t_minus_1.clone()
         
-
         x_pred_t_minus_1 = self.system_model.f(self.x_filtered_t_minus_2)
         self.x_pred_t_minus_1 = x_pred_t_minus_1.clone().detach()
         
@@ -55,35 +64,73 @@ class StateBayesianKalmanNetTAN(nn.Module):
         if y_predicted.dim() == 1: y_predicted = y_predicted.unsqueeze(-1)
         if y_t.dim() == 1: y_t = y_t.unsqueeze(-1)
 
+        # === CONDITIONAL TERRAIN SLOPE EXTRACTION ===
+        if self.use_terrain_grad:
+            eps = 5.0 # 5-meter perturbation
+            
+            # Perturb X position
+            x_pred_dx = x_predicted.clone()
+            x_pred_dx[:, 0] += eps
+            y_pred_dx = self.system_model.h(x_pred_dx)
+            if y_pred_dx.dim() == 1: y_pred_dx = y_pred_dx.unsqueeze(-1)
+            
+            # Perturb Y position
+            x_pred_dy = x_predicted.clone()
+            x_pred_dy[:, 1] += eps
+            y_pred_dy = self.system_model.h(x_pred_dy)
+            if y_pred_dy.dim() == 1: y_pred_dy = y_pred_dy.unsqueeze(-1)
+            
+            # Calculate slope (d_Alt / d_X and d_Alt / d_Y)
+            slope_x = (y_pred_dx[:, 0] - y_predicted[:, 0]) / eps
+            slope_y = (y_pred_dy[:, 0] - y_predicted[:, 0]) / eps
+            
+            terrain_slope = torch.stack([slope_x, slope_y], dim=1)
+        # ============================================
+
         # x_{t-1|t-1} - x_{t-1|t-2}
         state_inno = self.x_filtered_t_minus_1 - self.x_pred_t_minus_1
         inovation = y_t - y_predicted
         diff_state = self.x_filtered_t_minus_1 - self.x_filtered_t_minus_2
         diff_obs = y_t - self.y_t_minus_1
 
+        # Normalization
         if self.use_log_modulus:
             norm_state_inno = self.log_modulus(state_inno)
-            # y_t - y_{t|t-1}
-            
             norm_innovation = self.log_modulus(inovation)
-            # x_{t-1|t-1} - x_{t-2|t-2}
-
             norm_diff_state = self.log_modulus(diff_state)
-            # y_t - y_{t-1}
-
             norm_diff_obs = self.log_modulus(diff_obs)
+            if self.use_terrain_grad:
+                norm_terrain_slope = self.log_modulus(terrain_slope)
         else:
             norm_state_inno = func.normalize(state_inno, p=2, dim=1, eps=1e-12)
             norm_innovation = func.normalize(inovation, p=2, dim=1, eps=1e-12)
             norm_diff_state = func.normalize(diff_state, p=2, dim=1, eps=1e-12)
             norm_diff_obs = func.normalize(diff_obs, p=2, dim=1, eps=1e-12)
+            if self.use_terrain_grad:
+                norm_terrain_slope = func.normalize(terrain_slope, p=2, dim=1, eps=1e-12)
 
-
-        K_vec, h_new, regs = self.dnn(norm_state_inno, norm_innovation, norm_diff_state, norm_diff_obs, self.h_prev)
+        # Conditionally pass terrain_slope to the Bayesian DNN
+        if self.use_terrain_grad:
+            K_vec, h_new, regs = self.dnn(
+                norm_state_inno, 
+                norm_innovation, 
+                norm_diff_state, 
+                norm_diff_obs, 
+                norm_terrain_slope, # <--- NEW FEATURE
+                self.h_prev
+            )
+        else:
+            K_vec, h_new, regs = self.dnn(
+                norm_state_inno, 
+                norm_innovation, 
+                norm_diff_state, 
+                norm_diff_obs, 
+                self.h_prev
+            )
         
         K = K_vec.reshape(-1, self.state_dim, self.obs_dim)
-        # K = torch.clamp(K, min=-5.0, max=5.0)
         correction = torch.bmm(K, inovation.unsqueeze(-1)).squeeze(-1)
+        
         # x_{t|t} = x_{t|t-1} + K * inovation
         x_filtered = x_predicted + correction
         

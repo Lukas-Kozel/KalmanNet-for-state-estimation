@@ -1,20 +1,32 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
 class DNN_BayesianKalmanNetTAN(nn.Module):
-    def __init__(self, system_model, hidden_size_multiplier=10, output_layer_multiplier=4, num_gru_layers=1,init_min_dropout=0.5,init_max_dropout=0.8, use_layer_norm=False):
+    def __init__(self, system_model, hidden_size_multiplier=10, output_layer_multiplier=4, num_gru_layers=1,
+                 init_min_dropout=0.5, init_max_dropout=0.8, use_layer_norm=False, 
+                 use_terrain_grad=True): # <--- NEW FLAG ADDED
         super(DNN_BayesianKalmanNetTAN, self).__init__()
 
         self.state_dim = system_model.state_dim
         self.obs_dim = system_model.obs_dim
         self.device = system_model.device
+        self.use_terrain_grad = use_terrain_grad # <--- STORE FLAG
 
-        self.input_dim = 2 * self.state_dim + 2 * self.obs_dim 
+        # Dynamically calculate input dimension based on the flag
+        if self.use_terrain_grad:
+            self.input_dim = 2 * self.state_dim + 2 * self.obs_dim + 2
+            print("Bayesian DNN initialized WITH terrain slope (+2 features)")
+        else:
+            self.input_dim = 2 * self.state_dim + 2 * self.obs_dim
+            print("Bayesian DNN initialized WITHOUT terrain slope")
+            
         self.output_dim = self.state_dim * self.obs_dim
-        print("initialized with gradient terrain")
+        
         self.H1 = (self.state_dim + self.obs_dim) * hidden_size_multiplier * 8
         self.H2 = (self.state_dim * self.obs_dim) * output_layer_multiplier * 1
 
+        # This LayerNorm will now automatically be the correct size (16 or 14)
         self.input_norm = nn.LayerNorm(self.input_dim)
 
         self.input_layer = nn.Sequential(
@@ -34,10 +46,24 @@ class DNN_BayesianKalmanNetTAN(nn.Module):
         )
         self.concrete_dropout2 = ConcreteDropout(device=self.device, init_min=init_min_dropout, init_max=init_max_dropout)
 
-    def forward(self, state_inno, inovation, diff_state, diff_obs, h_prev):
+    # CHANGED: Using *args to conditionally handle the terrain_slope
+    def forward(self, state_inno, inovation, diff_state, diff_obs, *args):
+        """
+        Performs the forward pass of the Bayesian network.
 
-        nn_input = torch.cat([state_inno, inovation, diff_state, diff_obs], dim=1)
-
+        *args unpacking:
+        - If use_terrain_grad == True: args[0] = terrain_slope, args[1] = h_prev
+        - If use_terrain_grad == False: args[0] = h_prev
+        """
+        
+        # Conditionally unpack the remaining arguments and build the input tensor
+        if self.use_terrain_grad:
+            terrain_slope = args[0]
+            h_prev = args[1]
+            nn_input = torch.cat([state_inno, inovation, diff_state, diff_obs, terrain_slope], dim=1)
+        else:
+            h_prev = args[0]
+            nn_input = torch.cat([state_inno, inovation, diff_state, diff_obs], dim=1)
 
         normalized_input = self.input_norm(nn_input)
 
@@ -48,7 +74,7 @@ class DNN_BayesianKalmanNetTAN(nn.Module):
 
         out_final, reg2 = self.concrete_dropout2(out_gru_squeezed, self.output_layer)
 
-        total_reg = reg1+reg2
+        total_reg = reg1 + reg2
         return out_final, h_new, total_reg
 
 
