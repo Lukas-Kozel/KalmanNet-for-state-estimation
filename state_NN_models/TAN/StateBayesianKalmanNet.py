@@ -5,7 +5,7 @@ import torch.nn.init as init
 import torch.nn.functional as func
 
 class StateBayesianKalmanNetTAN(nn.Module):
-    def __init__(self, system_model, device, hidden_size_multiplier=10, output_layer_multiplier=4, num_gru_layers=1,
+    def __init__(self, system_model, device, hidden_size_multiplier=10, output_layer_multiplier=4, num_gru_layers=1,gru_hidden_dim_multiplier=4,
                  init_min_dropout=0.5,init_max_dropout=0.8,use_log_modulus=False, use_terrain_grad=True): # <--- NEW ARGUMENT
         super(StateBayesianKalmanNetTAN, self).__init__()
 
@@ -21,7 +21,8 @@ class StateBayesianKalmanNetTAN(nn.Module):
             system_model, 
             hidden_size_multiplier, 
             output_layer_multiplier, 
-            num_gru_layers, 
+            num_gru_layers,
+            gru_hidden_dim_multiplier, 
             init_min_dropout, 
             init_max_dropout,
             use_terrain_grad=self.use_terrain_grad # <--- PASSED TO DNN

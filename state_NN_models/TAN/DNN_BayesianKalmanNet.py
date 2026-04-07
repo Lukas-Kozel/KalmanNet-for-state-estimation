@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 class DNN_BayesianKalmanNetTAN(nn.Module):
-    def __init__(self, system_model, hidden_size_multiplier=10, output_layer_multiplier=4, num_gru_layers=1,
+    def __init__(self, system_model, hidden_size_multiplier=10, output_layer_multiplier=4, num_gru_layers=1,gru_hidden_dim_multiplier=4,
                  init_min_dropout=0.5, init_max_dropout=0.8, use_layer_norm=False, 
                  use_terrain_grad=True): # <--- NEW FLAG ADDED
         super(DNN_BayesianKalmanNetTAN, self).__init__()
@@ -35,7 +35,7 @@ class DNN_BayesianKalmanNetTAN(nn.Module):
         )
         self.concrete_dropout1 = ConcreteDropout(device=self.device, init_min=init_min_dropout, init_max=init_max_dropout)
 
-        gru_hidden_dim = 4 * ((self.state_dim * self.state_dim) + (self.obs_dim * self.obs_dim))
+        gru_hidden_dim = gru_hidden_dim_multiplier * ((self.state_dim * self.state_dim) + (self.obs_dim * self.obs_dim))
 
         self.gru = nn.GRU(self.H1, gru_hidden_dim, num_layers=num_gru_layers)
 
