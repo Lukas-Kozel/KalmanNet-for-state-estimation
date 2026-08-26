@@ -5,8 +5,8 @@ from tqdm import tqdm
 
 class AuxiliaryParticleFilter:
     """
-    Implementace Auxiliary Particle Filtru (APF).
-    Viz sekce 5.2.2. v "Particle Filters: A Hands-On Tutorial" (Elfring et al.).
+    Implementation of Auxiliary Particle Filter (APF).
+    See Section 5.2.2 in "Particle Filters: A Hands-On Tutorial" (Elfring et al.).
     """
     
     def __init__(self, system_model, num_particles=1000):
@@ -24,25 +24,25 @@ class AuxiliaryParticleFilter:
 
     def _propagate_particle(self, particle, Q_np):
         """
-        Propaguje JEDNU částici. Toto je implementace kroku "draw sample" z Algorithm 2 (str. 14).
-        Generuje novou částici x_k^i ze staré x_{k-1}^i pomocí process modelu.
+        Propagates ONE particle. This is the implementation of the "draw sample" step from Algorithm 2 (p. 14).
+        Generates a new particle x_k^i from old x_{k-1}^i using the process model.
         x_k^i ~ p(x_k | x_{k-1}^i)
-        
-        V článku je tento krok popsán v Example 3, rovnice (15) (str. 9):
+
+        In the paper, this step is described in Example 3, equation (15) (p. 9):
         x_k^i ~ N(f(x_{k-1}^i), Q)
         """
-        # Převedeme jednu částici na Torch tenzor, abychom mohli použít modelovou funkci f
+        # Convert one particle to Torch tensor to use the model function f
         particle_torch = torch.from_numpy(particle).float().to(self.device).reshape(1, -1)
-        
-        # Aplikujeme deterministickou část modelu pohybu: f(x_{k-1}^i)
+
+        # Apply deterministic part of motion model: f(x_{k-1}^i)
         predicted_particle_torch = self.f(particle_torch)
         predicted_particle = predicted_particle_torch.cpu().numpy().flatten()
-        
-        # Přidáme stochastickou část: náhodný vzorek procesního šumu w_k
-        noise = np.random.multivariate_normal(np.zeros(self.state_dim), Q_np) # zde je multivariate, protože chci jen vzorek
-        
-        # Výsledkem je nová pozice částice v čase k
-        return predicted_particle + noise # x_k^i ~ N(x_{k-1}^i + B_k*u_k, Q) z rovnice (15)
+
+        # Add stochastic part: random sample of process noise w_k
+        noise = np.random.multivariate_normal(np.zeros(self.state_dim), Q_np) # multivariate because we want just a sample
+
+        # Result is new particle position at time k
+        return predicted_particle + noise # x_k^i ~ N(x_{k-1}^i + B_k*u_k, Q) from equation (15)
     
 
     def _compute_likelihood(self, particle, z_np, R_np):
@@ -62,8 +62,8 @@ class AuxiliaryParticleFilter:
 
     def _multinomial_resample_indices(self, weights):
         """
-        Multinomial Resampling vracející pouze indexy. APF v referenci používá
-        tuto metodu pro výběr "nadějných rodičů".
+        Multinomial resampling returning only indices. APF in the reference uses
+        this method to select "promising parents".
         """
         N = len(weights)
         cumulative_sum = np.cumsum(weights)
@@ -82,8 +82,8 @@ class AuxiliaryParticleFilter:
     
     def process_sequence(self, y_seq, Ex0=None, P0=None, Q=None, R=None):
         """
-        Zpracuje celou sekvenci měření pomocí APF algoritmu.
-        Logika odpovídá 4 krokům popsaným v sekci 5.2.2 článku.
+        Processes entire measurement sequence using APF algorithm.
+        Logic corresponds to 4 steps described in Section 5.2.2 of the paper.
         """
         seq_len = y_seq.shape[0]
         y_seq_np = y_seq.cpu().numpy()
@@ -108,56 +108,56 @@ class AuxiliaryParticleFilter:
         particles_history.append(current_particles.copy())
 
         for k in tqdm(range(1,seq_len), desc="Processing sequence APF"):
-            
-            # --- APF Fáze 1: Výpočet pomocných vah ---
+
+            # --- APF Phase 1: Compute auxiliary weights ---
             # "Compute Ns point estimates... Then compute weights for these characterizations"
-            
-            # Pole pro uložení výsledků první fáze
+
+            # Array for storing first phase results
             char_likelihoods = np.empty(self.N)
             aux_weights = np.empty(self.N)
 
             for i in range(self.N):
-                # výpočet μ
+                # compute μ
                 char_particle = self._propagate_particle(current_particles[i], Q_np)
-                
-                # Ohodnotíme ji podle nového měření z_k a uložíme si likelihood
+
+                # Evaluate it against new measurement z_k and store likelihood
                 char_likelihoods[i] = self._compute_likelihood(char_particle, y_seq_np[k], R_np)
-                
-                # Spočítáme pomocnou váhu: w_pomocná ∝ w_{k-1} * p(z_k|μ_i)
+
+                # Compute auxiliary weight: w_aux ∝ w_{k-1} * p(z_k|μ_i)
                 aux_weights[i] = current_weights[i] * char_likelihoods[i]
 
-            # Normalizujeme pomocné váhy
+            # Normalize auxiliary weights
             aux_weights = self._normalize_weights(aux_weights)
 
-            # --- APF Fáze 2: Resampling "nadějných rodičů" ---
+            # --- APF Phase 2: Resampling "promising parents" ---
             # "Use weights w_i from step 1 in a resampling step... store the indices i^j"
             parent_indices = self._multinomial_resample_indices(aux_weights)
 
-            # --- APF Fáze 3 a 4: Finální predikce a výpočet vah ---
+            # --- APF Phase 3 and 4: Final prediction and weight computation ---
             # "Perform a prediction step for each of the... indices... Compute the weights..."
             
             new_particles = np.empty((self.N, self.state_dim))
             new_weights = np.empty(self.N)
 
             for i in range(self.N):
-                # Získáme index vybraného "rodiče"
-                # neiteruje se skrz všechny částice, ale jen přes vybrané indexy
+                # Get index of selected "parent"
+                # does not iterate over all particles, only over selected indices
                 parent_index = parent_indices[i]
-                
-                # Provedeme plnou stochastickou predikci z tohoto rodiče
+
+                # Perform full stochastic prediction from this parent
                 new_particles[i] = self._propagate_particle(current_particles[parent_index], Q_np)
-                
-                # Vypočítáme finální likelihood pro novou částici
+
+                # Compute final likelihood for new particle
                 final_likelihood = self._compute_likelihood(new_particles[i], y_seq_np[k], R_np)
-                
+
                 char_likelihood_of_parent = char_likelihoods[parent_index]
                 if char_likelihood_of_parent < 1e-10:
                     char_likelihood_of_parent = 1e-10
-                    
-                # Vypočítáme finální váhu podle rovnice (19) v článku: w_k ∝ p(z_k|x_k) / p(z_k|μ)
+
+                # Compute final weight according to equation (19) in paper: w_k ∝ p(z_k|x_k) / p(z_k|μ)
                 new_weights[i] = final_likelihood / char_likelihood_of_parent
-            
-            # Přepíšeme staré částice a váhy novými, normalizovanými
+
+            # Replace old particles and weights with new, normalized ones
             current_particles = new_particles
             current_weights = self._normalize_weights(new_weights)
             

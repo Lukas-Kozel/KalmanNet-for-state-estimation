@@ -5,8 +5,8 @@ from tqdm import tqdm
 
 class KalmanFilter:
     """
-    Kalmanův filtr pro t-invaritantní systém s lineární dynamikou.
-    (Původní implementace beze změn)
+    Kalman filter for time-invariant system with linear dynamics.
+    (Original implementation unchanged)
     """
     def __init__(self,model):
         self.device = model.Q.device
@@ -87,8 +87,8 @@ class KalmanFilter:
 class AdaptiveKalmanFilter_default:
     def __init__(self, model, mdm_L=4, mdm_version=1, lambda_rls=0.995, init_sigma_rls_value=10.0, alpha_nom=None):
         """
-        Adaptivní KF (Odhad plných matic Q a R).
-        Tato třída provádí online identifikaci všech unikátních prvků matic Q a R.
+        Adaptive KF (Estimation of full Q and R matrices).
+        This class performs online identification of all unique elements of Q and R matrices.
         """
         self.kf = KalmanFilter(model)
         self.device = model.Q.device
@@ -101,24 +101,24 @@ class AdaptiveKalmanFilter_default:
         self.nw = self.kf.F.shape[0] 
         self.nv = self.kf.H.shape[0] 
         
-        # 1. POČET PARAMETRŮ PRO PLNÉ MATICE
-        # Pro symetrickou matici NxN odhadujeme pouze horní trojúhelník: N*(N+1)/2 prvků
-        self.n_params_Q = (self.nw * (self.nw + 1)) // 2 
+        # 1. NUMBER OF PARAMETERS FOR FULL MATRICES
+        # For symmetric NxN matrix we estimate only upper triangle: N*(N+1)/2 elements
+        self.n_params_Q = (self.nw * (self.nw + 1)) // 2
         self.n_params_R = (self.nv * (self.nv + 1)) // 2
         self.n_params = self.n_params_Q + self.n_params_R
-        
-        # 2. INICIALIZACE RLS Z POČÁTEČNÍCH MATIC
+
+        # 2. INITIALIZE RLS FROM INITIAL MATRICES
         Q0 = model.Q.cpu().numpy()
         R0 = model.R.cpu().numpy()
-        
-        # Vytáhneme pouze unikátní prvky (horní trojúhelník) do 1D vektoru
+
+        # Extract only unique elements (upper triangle) to 1D vector
         q_init_vec = Q0[np.triu_indices(self.nw)]
         r_init_vec = R0[np.triu_indices(self.nv)]
-        
-        # alpha_est nyní obsahuje všechny prvky Q následované všemi prvky R
+
+        # alpha_est now contains all Q elements followed by all R elements
         self.alpha_est = np.concatenate([q_init_vec, r_init_vec]).astype(np.float64)
-        
-        # Kovarianční matice RLS (jelikož už nemáme alpha_nom, použijeme čistou identitu škálovanou konstantou)
+
+        # RLS covariance matrix (since we have no alpha_nom, use pure identity scaled by constant)
         self.Sigma_RLS = np.eye(self.n_params) * self.init_sigma_val
         
         # Buffery
@@ -134,10 +134,10 @@ class AdaptiveKalmanFilter_default:
         return self.Upsilon_2
 
     def _enforce_psd(self, matrix):
-        """Pomocná funkce: Vynutí, aby matice byla pozitivně semidefinitní a plně symetrická."""
-        # 1. Vynucení čisté symetrie
+        """Helper function: Ensures matrix is positive semidefinite and fully symmetric."""
+        # 1. Enforce pure symmetry
         sym_matrix = (matrix + matrix.T) / 2.0
-        # 2. Oříznutí záporných vlastních čísel
+        # 2. Clip negative eigenvalues
         eigenvalues, eigenvectors = np.linalg.eigh(sym_matrix)
         eigenvalues[eigenvalues < 1e-10] = 1e-10
         return eigenvectors @ np.diag(eigenvalues) @ eigenvectors.T
@@ -187,11 +187,11 @@ class AdaptiveKalmanFilter_default:
                 H_Q_part_full = H_full[:, :self.n_params_Q] 
                 H_R_part_full = H_full[:, self.n_params_Q:]
                 
-                # --- ZMĚNA: Žádné transformační šablony, spojíme matice přímo ---
+                # --- CHANGE: No transformation templates, concatenate matrices directly ---
                 H_rls = np.hstack([H_Q_part_full, H_R_part_full])
                 y_rls_flat = y_rls.flatten()
                 
-                # --- Standardní RLS Update ---
+                # --- Standard RLS Update ---
                 dim_obs_rls = H_rls.shape[0]
                 Omega = np.eye(dim_obs_rls)
 
@@ -204,28 +204,28 @@ class AdaptiveKalmanFilter_default:
                 I_p = np.eye(self.n_params)
                 self.Sigma_RLS = (I_p - K_gain @ H_rls) @ self.Sigma_RLS / self.lambda_rls              
                 
-                # --- REKONSTRUKCE CELÝCH MATIC Z VEKTORU ---
+                # --- RECONSTRUCTION OF FULL MATRICES FROM VECTOR ---
                 q_est_vec = self.alpha_est[:self.n_params_Q]
                 r_est_vec = self.alpha_est[self.n_params_Q:]
-                
-                # Rekonstrukce Q
+
+                # Reconstruct Q
                 Q_new = np.zeros((self.nw, self.nw))
                 Q_new[np.triu_indices(self.nw)] = q_est_vec
-                Q_new = Q_new + Q_new.T - np.diag(np.diag(Q_new)) # Doplnění spodního trojúhelníku
-                Q_new = self._enforce_psd(Q_new) # Zajištění poz. semidefinitnosti
-                
-                # Rekonstrukce R
+                Q_new = Q_new + Q_new.T - np.diag(np.diag(Q_new)) # Fill lower triangle
+                Q_new = self._enforce_psd(Q_new) # Ensure positive semidefiniteness
+
+                # Reconstruct R
                 R_new = np.zeros((self.nv, self.nv))
                 R_new[np.triu_indices(self.nv)] = r_est_vec
-                R_new = R_new + R_new.T - np.diag(np.diag(R_new)) # Doplnění spodního trojúhelníku
-                R_new = self._enforce_psd(R_new) # Zajištění poz. semidefinitnosti
+                R_new = R_new + R_new.T - np.diag(np.diag(R_new)) # Fill lower triangle
+                R_new = self._enforce_psd(R_new) # Ensure positive semidefiniteness
                 
                 # Update KF
                 self.kf.Q = torch.from_numpy(Q_new).float().to(self.device)
                 self.kf.R = torch.from_numpy(R_new).float().to(self.device)
                 
             except Exception as e:
-                print(f"Chyba v RLS aktualizaci: {e}")
+                print(f"Error in RLS update: {e}")
                 pass
 
         x_filt, P_filt, K_gain = self.kf.step(y_t)
@@ -240,7 +240,7 @@ class AdaptiveKalmanFilter_default:
             self.mdm_version, 
             self.lambda_rls,
             init_sigma_rls_value=self.init_sigma_val,
-            alpha_nom=None # Ošetřeno pro kompatibilitu volání
+            alpha_nom=None # Handled for compatibility call
         )
 
         if Ex0 is None: Ex0 = self.kf.model.Ex0

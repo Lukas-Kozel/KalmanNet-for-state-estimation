@@ -3,13 +3,13 @@ from tqdm import tqdm
 
 class KalmanFilter:
     """
-    Kalmanův filtr pro t-invaritantní systém s lineární dynamikou.
+    Kalman filter for time-invariant system with linear dynamics.
     """
     def __init__(self,model):
         self.device = model.Q.device
         self.model = model
-        self.Ex0 = model.Ex0  # očekávaná hodnota počátečního stavu
-        self.P0 = model.P0  # Počáteční kovarianční matice
+        self.Ex0 = model.Ex0  # expected value of initial state
+        self.P0 = model.P0  # Initial covariance matrix
         self.F = model.F
         self.H = model.H
         self.Q = model.Q
@@ -17,7 +17,7 @@ class KalmanFilter:
         self.state_dim = self.F.shape[0]
         self.obs_dim = self.H.shape[0]
 
-        # Interní stav pro online použití: predikce pro aktuální krok
+        # Internal state for online use: prediction for current step
         self.x_predict_current = None
         self.P_predict_current = None
 
@@ -25,7 +25,7 @@ class KalmanFilter:
 
     def reset(self, Ex0, P0):
         """
-        Inicializuje nebo resetuje interní stav filtru pro online použití.
+        Initializes or resets the internal filter state for online use.
         """
         self.x_predict_current = Ex0.clone().detach().reshape(self.state_dim, 1)
         self.P_predict_current = P0.clone().detach()
@@ -53,8 +53,8 @@ class KalmanFilter:
     
     def step(self, y_t):
         """
-        Provede jeden kompletní krok filtrace pro ONLINE použití.
-        Vrací nejlepší odhad pro aktuální čas 't'.
+        Performs one complete filtering step for ONLINE use.
+        Returns the best estimate for current time 't'.
         """
         x_filtered, P_filtered, _, _ = self.update_step(self.x_predict_current, y_t, self.P_predict_current)
 
@@ -67,7 +67,7 @@ class KalmanFilter:
 
     def process_sequence(self, y_seq, Ex0=None, P0=None):
             """
-            Zpracuje celou sekvenci měření `y_seq` (offline) a vrátí detailní historii.
+            Processes the entire measurement sequence `y_seq` (offline) and returns detailed history.
             """
 
             seq_len = y_seq.shape[0]
@@ -79,7 +79,7 @@ class KalmanFilter:
 
             x_predict_k = Ex0.clone().detach().reshape(self.state_dim, 1)
             P_predict_k = P0.clone().detach()
-            for k in tqdm(range(seq_len), desc="KF filtrace", leave=False):
+            for k in tqdm(range(seq_len), desc="KF filtering", leave=False):
                 x_filtered, P_filtered, K, innovation = self.update_step(x_predict_k, y_seq[k], P_predict_k)
 
                 x_predict_k_plus_1, P_predict_k_plus_1 = self.predict_step(x_filtered, P_filtered)

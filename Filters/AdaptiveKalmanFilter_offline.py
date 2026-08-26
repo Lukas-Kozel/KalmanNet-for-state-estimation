@@ -5,13 +5,13 @@ from MDM.MDM_functions import (MDM_nullO_LTI, Ksi_fun, baseMatrix_fun,
 
 class KalmanFilter:
     """
-    Kalmanův filtr pro t-invaritantní systém s lineární dynamikou.
+    Kalman filter for time-invariant system with linear dynamics.
     """
     def __init__(self, model):
         self.device = model.Q.device
         self.model = model
-        self.Ex0 = model.Ex0  # očekávaná hodnota počátečního stavu
-        self.P0 = model.P0  # Počáteční kovarianční matice
+        self.Ex0 = model.Ex0  # expected value of initial state
+        self.P0 = model.P0  # Initial covariance matrix
         self.F = model.F
         self.H = model.H
         self.Q = model.Q
@@ -19,7 +19,7 @@ class KalmanFilter:
         self.state_dim = self.F.shape[0]
         self.obs_dim = self.H.shape[0]
 
-        # Interní stav pro online použití: predikce pro aktuální krok
+        # Internal state for online use: prediction for current step
         self.x_predict_current = None
         self.P_predict_current = None
 
@@ -27,7 +27,7 @@ class KalmanFilter:
 
     def reset(self, Ex0, P0):
         """
-        Inicializuje nebo resetuje interní stav filtru pro online použití.
+        Initializes or resets internal filter state for online use.
         """
         self.x_predict_current = Ex0.clone().detach().reshape(self.state_dim, 1)
         self.P_predict_current = P0.clone().detach()
@@ -54,8 +54,8 @@ class KalmanFilter:
     
     def step(self, y_t):
         """
-        Provede jeden kompletní krok filtrace pro ONLINE použití.
-        Vrací nejlepší odhad pro aktuální čas 't'.
+        Performs one complete filtering step for ONLINE use.
+        Returns best estimate for current time 't'.
         """
         x_filtered, P_filtered, _, _ = self.update_step(self.x_predict_current, y_t, self.P_predict_current)
         x_predict_next, P_predict_next = self.predict_step(x_filtered, P_filtered)
@@ -106,23 +106,23 @@ class KalmanFilter:
 class AdaptiveKalmanFilter:
     def __init__(self, model, mdm_L=2, mdm_version=2):
         """
-        Inicializuje adaptivní filtr.
-        :param model: Objekt obsahující počáteční F, H, Q, R, Ex0, P0.
-        :param mdm_L: Parametr L pro MDM metodu.
-        :param mdm_version: Parametr version pro MDM metodu.
+        Initializes adaptive filter.
+        :param model: Object containing initial F, H, Q, R, Ex0, P0.
+        :param mdm_L: Parameter L for MDM method.
+        :param mdm_version: Parameter version for MDM method.
         """
         self.kf = KalmanFilter(model)
         self.device = model.Q.device
-        self.mdm_L = mdm_L # delka posuvneho okna pro MDM
+        self.mdm_L = mdm_L # length of sliding window for MDM
         self.mdm_version = mdm_version
 
     def estimate_qr_from_data(self, y_seq, u_seq=None):
         """
-        Provede robustní odhad Q a R z balíku dat pomocí offline MDM.
+        Performs robust Q and R estimation from data batch using offline MDM.
         """
-        print("Spouštím MDM odhad Q a R...")
+        print("Starting MDM estimation of Q and R...")
         
-        # KROK 1: Konverze PyTorch -> NumPy
+        # STEP 1: Convert PyTorch -> NumPy
         F_np = self.kf.F.cpu().numpy()
         H_np = self.kf.H.cpu().numpy()
         z_np = y_seq.cpu().numpy().squeeze()
