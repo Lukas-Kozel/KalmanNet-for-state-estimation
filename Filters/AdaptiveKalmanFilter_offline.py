@@ -67,7 +67,7 @@ class KalmanFilter:
 
     def process_sequence(self, y_seq, Ex0=None, P0=None):
         """
-        Zpracuje celou sekvenci měření `y_seq` (offline) a vrátí detailní historii.
+        Processes entire measurement sequence `y_seq` (offline) and returns detailed history.
         """
         seq_len = y_seq.shape[0]
 
@@ -143,32 +143,32 @@ class AdaptiveKalmanFilter:
         nw, nv = F_np.shape[0], H_np.shape[0]
         nz_np = np.array([nv])
 
-        # KROK 2: Spuštění MDM algoritmu
+        # STEP 2: Run MDM algorithm
         r, Awv = MDM_nullO_LTI(self.mdm_L, F_np, G_np, E_np, nz_np, H_np, D_np, z_np, u_np, self.mdm_version)
         
-        # KROK 3: Centrování statistiky (Klíčové pro odstranění biasu z počátečního stavu)
+        # STEP 3: Statistics centering (Key for removing bias from initial state)
         r0 = np.array(r).squeeze()
         if r0.ndim == 1:
             r0 = r0[:, np.newaxis]
-            
-        r0 = r0 - np.mean(r0, axis=0) # Zabrání explozi vlivem počáteční odchylky x0
+
+        r0 = r0 - np.mean(r0, axis=0) # Prevents explosion due to initial deviation x0
         
         Np = r0.shape[0]
         nr = r0.shape[1]
         Ksi = Ksi_fun(nr)
         r02 = np.array([Ksi @ kron2_vec(r0[i]) for i in range(Np)])
 
-        # Dynamická konstrukce bází
+        # Dynamic basis construction
         w2b = [baseMatrix_fun(nw, 1)]
         v2b = [baseMatrix_fun(nv, 1)]
             
         Upsilon_2 = Upsilon_2_fun(w2b, v2b, self.mdm_L)   
         Awv2u = Ksi @ kron2_mat(Awv) @ Upsilon_2
             
-        # KROK 4: Řešení s regularizací (rcond odstraní šumové, kolineární dimenze)
+        # STEP 4: Solution with regularization (rcond removes noisy, collinear dimensions)
         alpha_2 = np.linalg.pinv(Awv2u, rcond=1e-3) @ np.mean(r02, axis=0)
 
-        # KROK 5: Rekonstrukce
+        # STEP 5: Reconstruction
         q_len = w2b[0].shape[0]
         r_len = v2b[0].shape[0]
         
@@ -178,34 +178,34 @@ class AdaptiveKalmanFilter:
         Q_est_np = np.tensordot(alpha_q, w2b[0], axes=([0], [0]))
         R_est_np = np.tensordot(alpha_r, v2b[0], axes=([0], [0]))
         
-        # KROK 6: Projekce na fyzikálně platné (Positive Semi-Definite) matice
-        # Zaručí, že rozptyly nebudou záporné
+        # STEP 6: Projection to physically valid (Positive Semi-Definite) matrices
+        # Ensures variances won't be negative
         def make_psd(mat):
             mat = (mat + mat.T) / 2.0
             evals, evecs = np.linalg.eigh(mat)
-            evals[evals < 0] = 1e-6 # Vynucení nezápornosti
+            evals[evals < 0] = 1e-6 # Enforce non-negativity
             return evecs @ np.diag(evals) @ evecs.T
 
         Q_est_np = make_psd(Q_est_np)
         R_est_np = make_psd(R_est_np)
         
-        print("MDM odhad dokončen.")
-        print("Odhadnuté Q:\n", np.round(Q_est_np, 4))
-        print("Odhadnuté R:\n", np.round(R_est_np, 4))
+        print("MDM estimation completed.")
+        print("Estimated Q:\n", np.round(Q_est_np, 4))
+        print("Estimated R:\n", np.round(R_est_np, 4))
 
         Q_est_torch = torch.from_numpy(Q_est_np).float().to(self.device)
         R_est_torch = torch.from_numpy(R_est_np).float().to(self.device)
 
         return Q_est_torch, R_est_torch
     def update_qr_matrices(self, new_Q, new_R):
-        """Aktualizuje matice Q a R v interním Kalmanově filtru."""
+        """Updates Q and R matrices in internal Kalman filter."""
         self.kf.Q = new_Q
         self.kf.R = new_R
 
     def process_sequence_with_qr(self, y_seq, Q, R, Ex0=None, P0=None):
         """
-        Nastaví poskytnuté Q a R a provede inferenci KF nad testovací trajektorií.
-        Tuto metodu volej během testování.
+        Sets provided Q and R and performs KF inference over test trajectory.
+        Call this method during testing.
         """
         self.update_qr_matrices(Q, R)
         results = self.kf.process_sequence(y_seq, Ex0=Ex0, P0=P0)
@@ -213,7 +213,7 @@ class AdaptiveKalmanFilter:
 
     def process_sequence_adaptively(self, y_seq, u_seq=None):
         """
-        Kompletní adaptivní proces: odhad Q, R z dat a následná filtrace nad těmi samými daty.
+        Complete adaptive process: Q, R estimation from data and subsequent filtering over the same data.
         """
         Q_est, R_est = self.estimate_qr_from_data(y_seq, u_seq)
         results = self.process_sequence_with_qr(y_seq, Q_est, R_est)

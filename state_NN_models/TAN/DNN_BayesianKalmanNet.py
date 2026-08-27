@@ -5,13 +5,13 @@ import torch.nn.functional as F
 class DNN_BayesianKalmanNetTAN(nn.Module):
     def __init__(self, system_model, hidden_size_multiplier=10, output_layer_multiplier=4, num_gru_layers=1,gru_hidden_dim_multiplier=4,
                  init_min_dropout=0.5, init_max_dropout=0.8, use_layer_norm=False, 
-                 use_terrain_grad=True): # <--- NEW FLAG ADDED
+                 use_terrain_grad=True):
         super(DNN_BayesianKalmanNetTAN, self).__init__()
 
         self.state_dim = system_model.state_dim
         self.obs_dim = system_model.obs_dim
         self.device = system_model.device
-        self.use_terrain_grad = use_terrain_grad # <--- STORE FLAG
+        self.use_terrain_grad = use_terrain_grad
 
         # Dynamically calculate input dimension based on the flag
         if self.use_terrain_grad:
@@ -46,7 +46,6 @@ class DNN_BayesianKalmanNetTAN(nn.Module):
         )
         self.concrete_dropout2 = ConcreteDropout(device=self.device, init_min=init_min_dropout, init_max=init_max_dropout)
 
-    # CHANGED: Using *args to conditionally handle the terrain_slope
     def forward(self, state_inno, inovation, diff_state, diff_obs, *args):
         """
         Performs the forward pass of the Bayesian network.
@@ -93,7 +92,7 @@ class ConcreteDropout(nn.Module):
         self.p_logit = nn.Parameter(torch.empty(1).uniform_(init_min, init_max))
 
     def forward(self, x, layer):
-        p = torch.sigmoid(self.p_logit.to(x.device)) # p je mezi 0 a 1
+        p = torch.sigmoid(self.p_logit.to(x.device)) # p is between 0 and 1
 
         x_dropped = self._concrete_dropout(x, p)
         out = layer(x_dropped)

@@ -13,8 +13,8 @@ output_layer_multiplier=4, num_gru_layers=1, gru_hidden_dim_multiplier=1):
 
          m = self.state_dim
          n = self.obs_dim
-         # 4 vstupy: state_inno, inovation, diff_state, diff_obs
-         # (Rozměry: m, n, m, n)
+         # 4 inputs: state_inno, inovation, diff_state, diff_obs
+         # (Dimensions: m, n, m, n)
          self.input_dim = 2 * m + 2 * n 
 
          # 1st hidden layer (input)

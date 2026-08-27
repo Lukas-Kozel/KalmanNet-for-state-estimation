@@ -40,7 +40,7 @@ class DNN_BayesianKalmanNetNCLT_test(nn.Module):
 
         nn_input = torch.cat([state_inno, inovation, diff_state, diff_obs], dim=1)
 
-        # Aplikace normalizace
+        # Application of normalization
         # normalized_input = self.input_norm(nn_input)
 
         # Apply dropout on normalized data
@@ -70,13 +70,13 @@ class ConcreteDropout(nn.Module):
         init_min = torch.log(torch.tensor(init_min)) - torch.log(1. - torch.tensor(init_min))
         init_max = torch.log(torch.tensor(init_max)) - torch.log(1. - torch.tensor(init_max))
 
-        self.p_logit = nn.Parameter(torch.empty(1).uniform_(init_min, init_max)) # dropout prob p je trenovatelny parametr,
-        #uniform zajisti, ze je vzdy mezi 0 a 1
-        # "logit" je transformace pravdepodobnosti p na realnou osu, tedy misto toho, aby se neuronka ucila, ze p musi byt mezi 0 a 1
-        # , ucime se p_logit, ktery muze byt libovolne realne cislo
+        self.p_logit = nn.Parameter(torch.empty(1).uniform_(init_min, init_max)) # dropout probability p is a trainable parameter,
+        # uniform ensures it stays between 0 and 1
+        # "logit" is a transformation of probability p to real line, so instead of network learning that p must be between 0 and 1
+        # , we learn p_logit which can be any real number
 
     def forward(self, x, layer):
-        p = torch.sigmoid(self.p_logit.to(x.device)) # p je mezi 0 a 1
+        p = torch.sigmoid(self.p_logit.to(x.device)) # p is between 0 and 1
 
         x_dropped = self._concrete_dropout(x, p)
         out = layer(x_dropped)
@@ -104,15 +104,15 @@ class ConcreteDropout(nn.Module):
         eps = 1e-7
         t = 0.1
 
-        unif_noise = torch.rand_like(x) # ve clanku je to parametr u - U(0,1)
+        unif_noise = torch.rand_like(x) # in the paper this is parameter u ~ U(0,1)
 
         drop_prob = (torch.log(p+eps) - torch.log(1. - p+eps) + torch.log(unif_noise+eps) - torch.log(1. - unif_noise+eps))
-        drop_prob = torch.sigmoid(drop_prob / t) # pravdepodobnost vypnuti neuronu
+        drop_prob = torch.sigmoid(drop_prob / t) # probability of neuron deactivation
 
         random_tensor = 1. - drop_prob
-        retain_prob = 1. - p # pravdepodobnost, ze neuron zustane aktivni
+        retain_prob = 1. - p # probability that neuron remains active
 
-        x= torch.mul(x, random_tensor) # vektor, ktery reprezentuje dropout masku, zpusobi ztlumeni neuronu, misto jejich uplneho vypnuti
-        x = x / retain_prob # aplikace inverzniho skalovani
+        x= torch.mul(x, random_tensor) # vector representing dropout mask, causes attenuation of neurons instead of complete deactivation
+        x = x / retain_prob # application of inverse scaling
 
         return x

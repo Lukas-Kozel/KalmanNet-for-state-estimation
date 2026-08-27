@@ -28,7 +28,7 @@ class KalmanFormerNCLT(nn.Module):
             dropout=dropout
         ).to(device)
 
-        # Buffer pro historické hodnoty
+        # Buffer for historical values
         self.y_prev = None                  
         self.x_filtered_prev = None     
         self.x_filtered_prev_prev = None  
@@ -51,42 +51,42 @@ class KalmanFormerNCLT(nn.Module):
 
     def step(self, y_t_raw, u_t=None):
         """
-        Robustní krok KalmanFormeru.
-        Místo 'if' větvení používá maskování, aby se nepřetrhl graf gradientů.
+        Robust step of KalmanFormer.
+        Instead of 'if' branching uses masking to avoid breaking gradient graph.
         """
         y_t_raw = y_t_raw.to(self.device) # [B, n]
         batch_size = y_t_raw.shape[0]
 
-        # 1. PREDIKCE (Vždy stejná)
+        # 1. PREDICTION (Always the same)
         x_pred_raw = self.system_model.f(self.x_filtered_prev, u_t) # [B, m]
         y_pred_raw = self.system_model.h(x_pred_raw) # [B, n]
         
-        # 2. MASKING NaN (Klíčová oprava)
-        # Vytvoříme masku: True tam, kde JSOU data platná, False kde je NaN
-        # Předpokládáme, že pokud je NaN v jakémkoliv kanálu, měření je neplatné
+        # 2. MASKING NaN
+        # Create mask: True where data IS valid, False where NaN
+        # Assume that if NaN is in any channel, measurement is invalid
         is_nan_mask = torch.any(torch.isnan(y_t_raw), dim=1, keepdim=True) # [B, 1]
         valid_mask = ~is_nan_mask # [B, 1] (1 = valid, 0 = invalid)
 
-        # Vytvoříme "vyčištěný" vstup y_t
-        # Tam, kde je NaN, vložíme y_pred (inovace bude 0, síť se nezblázní)
-        # Tím udržíme spojitost grafu.
+        # Create "cleaned" input y_t
+        # Where NaN is, insert y_pred (innovation will be 0, network won't go crazy)
+        # This keeps graph continuity.
         y_t_clean = torch.where(is_nan_mask, y_pred_raw, y_t_raw)
         
-        # 3. VÝPOČET FEATURES (vždy s čistými daty)
+        # 3. FEATURE COMPUTATION (always with clean data)
         
         # F1: Observation difference
-        # Pokud minule bylo NaN, y_prev jsme nastavili chytře (viz konec funkce)
+        # If last time was NaN, y_prev was set smartly (see end of function)
         obs_diff = y_t_clean - self.y_prev
         
         # F2: Innovation
-        # Pokud bylo NaN, y_t_clean == y_pred_raw, takže innovation je 0 (což je správně)
+        # If NaN, y_t_clean == y_pred_raw, so innovation is 0 (which is correct)
         innovation = y_t_clean - y_pred_raw
         
         # F3 & F4: State diffs
         fw_evol_diff = self.x_filtered_prev - self.x_filtered_prev_prev
         fw_update_diff = self.x_filtered_prev - self.x_pred_prev
 
-        # Normalizace (L2)
+        # Normalization (L2)
         norm_obs_diff = func.normalize(obs_diff, p=2, dim=1, eps=1e-12)
         norm_innovation = func.normalize(innovation, p=2, dim=1, eps=1e-12)
         norm_fw_evol_diff = func.normalize(fw_evol_diff, p=2, dim=1, eps=1e-12)
@@ -96,8 +96,8 @@ class KalmanFormerNCLT(nn.Module):
         # norm_fw_evol_diff = fw_evol_diff
         # norm_fw_update_diff = fw_update_diff
         
-        # 4. DNN PASS (Běží vždy, i pro NaN data!)
-        # Tím zajistíme, že 'K_vec' je vždy součástí výpočetního grafu
+        # 4. DNN PASS (Runs always, even for NaN data!)
+        # This ensures that 'K_vec' is always part of computational graph
         K_vec = self.dnn(
             norm_obs_diff, norm_innovation, 
             norm_fw_evol_diff, norm_fw_update_diff
@@ -105,27 +105,27 @@ class KalmanFormerNCLT(nn.Module):
         
         K = K_vec.reshape(batch_size, self.state_dim, self.obs_dim)
         
-        # 5. KOREKCE S MASKOU
-        # Spočítáme korekci (pro NaN data bude K * 0 = 0, ale raději to pojistíme)
+        # 5. CORRECTION WITH MASK
+        # Compute correction (for NaN data K * 0 = 0, but we secure it)
         raw_correction = (K @ norm_innovation.unsqueeze(-1)).squeeze(-1)
         
-        # Aplikujeme masku: 
-        # Kde je valid_mask=1, projde korekce. 
-        # Kde je valid_mask=0 (NaN), korekce se vynuluje.
-        # Důležité: Tímto násobením zůstává graf spojený (vynásobení nulou je validní operace v autogradu).
+        # Apply mask: 
+        # Where valid_mask=1, correction passes. 
+        # Where valid_mask=0 (NaN), correction is zeroed.
+        # Important: This multiplication keeps graph connected (multiplying by zero is valid autograd operation).
         correction = raw_correction * valid_mask.float()
 
         x_filtered_raw = x_pred_raw + correction 
 
-        # 6. UPDATE HISTORIE
+        # 6. UPDATE HISTORY
         self.x_filtered_prev_prev = self.x_filtered_prev.clone() 
         self.x_pred_prev = x_pred_raw.clone()         
         self.x_filtered_prev = x_filtered_raw.clone()      
         
         # Update y_prev
-        # Pokud bylo měření platné, uložíme ho.
-        # Pokud bylo NaN, uložíme 'y_pred_raw' (naši predikci), aby v dalším kroku
-        # 'obs_diff' (y_t - y_prev) nedával nesmysly.
+        # If measurement was valid, store it.
+        # If NaN, store 'y_pred_raw' (our prediction), so in next step
+        # 'obs_diff' (y_t - y_prev) does not give nonsense.
         self.y_prev = torch.where(is_nan_mask, y_pred_raw.detach(), y_t_raw.detach())
         
         return x_filtered_raw
@@ -151,5 +151,5 @@ class KalmanFormerNCLT(nn.Module):
         self.x_pred_prev = self.x_pred_prev.detach()
 
     def _log_and_raise(self, failed_tensor_name, local_vars):
-        # (Logování může zůstat stejné, pokud ho tam chceš)
+        # Logging can remain same if you want it
         pass

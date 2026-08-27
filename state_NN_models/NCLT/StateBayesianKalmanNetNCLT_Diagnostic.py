@@ -16,17 +16,17 @@ class StateBayesianKalmanNetNCLT_Diagnostic(nn.Module):
         self.state_dim = system_model.state_dim
         self.obs_dim = system_model.obs_dim
         
-        # Nový hyperparametr: Process Noise Std (Jitter)
+        # New hyperparameter: Process Noise Std (Jitter)
         if isinstance(process_jitter, (list, tuple)):
             self.process_jitter = torch.tensor(process_jitter, device=device).float()
         else:
-            self.process_jitter = process_jitter.to(device) # Pokud už je tensor
+            self.process_jitter = process_jitter.to(device) # If already tensor
             
-        # Reshape na [1, Dim] pro broadcasting (aby to šlo přičíst k batchi)
+        # Reshape to [1, Dim] for broadcasting (so it can be added to batch)
         self.process_jitter = self.process_jitter.view(1, -1)
         self.dnn = DNN_BayesianKalmanNetNCLT_test(system_model, hidden_size_multiplier, output_layer_multiplier, num_gru_layers, init_min_dropout, init_max_dropout).to(device)
 
-        # Interní stavy
+        # Internal states
         self.x_filtered_t_minus_1 = None
         self.x_filtered_t_minus_2 = None
         self.x_pred_t_minus_1 = None
@@ -40,15 +40,15 @@ class StateBayesianKalmanNetNCLT_Diagnostic(nn.Module):
             device=self.device
         ).detach()
         
-        # --- DIAGNOSTIKA ---
+        # --- DIAGNOSTICS ---
         self.diagnostics_enabled = False
         self.history = defaultdict(list)
 
         self.init_weights()
 
     def init_weights(self) -> None:
-        """Stabilní inicializace vah."""
-        print("INFO: Aplikuji 'Start Zero' inicializaci pro Kalman Gain.")
+        """Stable weight initialization."""
+        print("INFO: Applying 'Start Zero' initialization for Kalman Gain.")
         for name, m in self.dnn.named_modules():
             if isinstance(m, nn.Linear):
                 init.kaiming_uniform_(m.weight, nonlinearity='relu')
@@ -61,14 +61,14 @@ class StateBayesianKalmanNetNCLT_Diagnostic(nn.Module):
                     if 'weight' in param_name: init.xavier_uniform_(param.data)
                     elif 'bias' in param_name: param.data.fill_(0)
 
-        # Inicializace výstupní vrstvy blízko nule
+        # Initialize output layer close to zero
         if hasattr(self.dnn, 'output_layer') and len(self.dnn.output_layer) > 0:
             last_layer = self.dnn.output_layer[-1] 
             if isinstance(last_layer, nn.Linear):
                 init.uniform_(last_layer.weight, -1e-3, 1e-3)
                 if last_layer.bias is not None:
                     init.zeros_(last_layer.bias)
-                print("DEBUG: Výstupní vrstva vynulována (Soft Start).")
+                print("DEBUG: Output layer zeroed (Soft Start).")
 
     def reset(self, batch_size=1, initial_state=None):
         if initial_state is not None:
@@ -119,12 +119,12 @@ class StateBayesianKalmanNetNCLT_Diagnostic(nn.Module):
         if y_t.dim() == 1: y_t = y_t.unsqueeze(0)
         if u_t is not None and u_t.dim() == 1: u_t = u_t.unsqueeze(0)
 
-        # --- 0. KONTROLA VSTUPŮ ---
+        # --- 0. INPUT CHECK ---
         self._check_tensor(u_t, "Input u_t (Control)")
         self._check_tensor(self.x_filtered_t_minus_1, "Previous State x_t-1")
 
-        # 1. PREDIKCE (Fyzika)
-        # Deterministická část
+        # 1. PREDICTION (Physics)
+        # Deterministic part
         x_predicted_det = self.system_model.f(self.x_filtered_t_minus_1, u_t)
         self._check_tensor(x_predicted_det, "Physics Prediction (f)")
         
@@ -141,14 +141,14 @@ class StateBayesianKalmanNetNCLT_Diagnostic(nn.Module):
         y_t_safe = torch.where(mask, y_t, y_predicted)
         innovation = (y_t_safe - y_predicted) * mask 
 
-        # D. Rozdíl měření
+        # D. Measurement difference
         obs_diff = (y_t_safe - self.y_t_minus_1) * mask
         
         # === UPDATE END ===
         diff_state = self.x_filtered_t_minus_1 - self.x_filtered_t_minus_2
         state_inno = self.x_filtered_t_minus_1 - self.x_pred_t_minus_1
         
-        # Normalizace
+        # Normalization
         norm_innovation = F.normalize(innovation, p=2, dim=1, eps=1e-12)
         norm_diff_obs = F.normalize(obs_diff, p=2, dim=1, eps=1e-12)
         norm_diff_state = F.normalize(diff_state, p=2, dim=1, eps=1e-12)
@@ -162,11 +162,11 @@ class StateBayesianKalmanNetNCLT_Diagnostic(nn.Module):
         
         K_masked = K * mask_expanded
         
-        # 5. KOREKCE
+        # 5. CORRECTION
         raw_correction = torch.bmm(K_masked, innovation.unsqueeze(-1)).squeeze(-1)
         x_filtered = x_predicted + raw_correction
         
-        # --- DIAGNOSTIKA ---
+        # --- DIAGNOSTICS ---
         if self.diagnostics_enabled:
             with torch.no_grad():
                 self.history['K_raw'].append(K.detach().cpu().numpy())       
@@ -175,7 +175,7 @@ class StateBayesianKalmanNetNCLT_Diagnostic(nn.Module):
                 self.history['correction'].append(raw_correction.detach().cpu().numpy()) 
                 self.history['mask'].append(mask.detach().cpu().numpy())
 
-        # 6. AKTUALIZACE
+        # 6. UPDATE
         self.x_filtered_t_minus_2 = self.x_filtered_t_minus_1.clone() 
         self.x_filtered_t_minus_1 = x_filtered.clone()
         self.x_pred_t_minus_1 = x_predicted.clone()

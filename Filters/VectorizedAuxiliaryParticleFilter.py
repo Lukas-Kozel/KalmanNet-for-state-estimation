@@ -5,7 +5,7 @@ from tqdm import tqdm
 
 class VectorizedAuxiliaryParticleFilter:
     """
-    Plně vektorizovaná implementace Auxiliary Particle Filtru (APF).
+    Fully vectorized implementation of Auxiliary Particle Filter (APF).
     """
     
     def __init__(self, system_model, num_particles=1000):
@@ -14,7 +14,7 @@ class VectorizedAuxiliaryParticleFilter:
         self.h = system_model.h
         self.N = num_particles
         self.state_dim = system_model.Q.shape[0]
-        # Pozor: Předpokládáme, že H mapuje na obs_dim. Získáme ho z R.
+        # Note: We assume H maps to obs_dim. We obtain it from R.
         self.obs_dim = system_model.R.shape[0] 
         
         self.Ex0_np = system_model.Ex0.cpu().numpy().flatten()
@@ -22,39 +22,39 @@ class VectorizedAuxiliaryParticleFilter:
         self.Q_np_default = system_model.Q.cpu().numpy()
         self.R_np_default = system_model.R.cpu().numpy()
         
-        # Pro vektorizaci likelihoodu si připravíme fixní objekt pro R (pokud je R konst.)
-        # Pokud se R mění, budeme ho muset tvořit v každém kroku.
+        # For likelihood vectorization we prepare a fixed object for R (if R is const.)
+        # If R changes, we will have to create it in each step.
         self.mvn_R = multivariate_normal(mean=np.zeros(self.obs_dim), cov=self.R_np_default)
 
     def _propagate_particles(self, particles, Q_np):
         """
-        VEKTORIZOVANÁ propagace.
-        Vstup: particles (N, state_dim)
-        Výstup: propagated_particles (N, state_dim)
+        VECTORIZED propagation.
+        Input: particles (N, state_dim)
+        Output: propagated_particles (N, state_dim)
         """
-        # 1. Dávkový převod na torch (N, state_dim)
+        # 1. Batch conversion to torch (N, state_dim)
         particles_torch = torch.from_numpy(particles).float().to(self.device)
         
-        # 2. Aplikace modelu f na celý batch najednou
-        # Předpokládá, že self.f umí pracovat s (N, dim), což NN obvykle umí
+        # 2. Apply model f to entire batch at once
+        # Assumes self.f can work with (N, dim), which NN usually can
         with torch.no_grad():
             predicted_particles_torch = self.f(particles_torch)
         
         predicted_particles = predicted_particles_torch.cpu().numpy()
         
-        # 3. Generování šumu pro všechny částice najednou
-        # size=self.N zajistí vygenerování matice (N, state_dim)
+        # 3. Generate noise for all particles at once
+        # size=self.N ensures generation of matrix (N, state_dim)
         noise = np.random.multivariate_normal(np.zeros(self.state_dim), Q_np, size=self.N)
         
         return predicted_particles + noise
 
     def _compute_likelihoods(self, particles, z_np, R_np):
         """
-        VEKTORIZOVANÝ výpočet likelihoodu.
-        Vstup: particles (N, state_dim), z_np (obs_dim,)
-        Výstup: likelihoods (N,)
+        VECTORIZED likelihood computation.
+        Input: particles (N, state_dim), z_np (obs_dim,)
+        Output: likelihoods (N,)
         """
-        # 1. Transformace všech částic do prostoru měření h(x)
+        # 1. Transform all particles into measurement space h(x)
         particles_torch = torch.from_numpy(particles).float().to(self.device)
         
         with torch.no_grad():
@@ -62,14 +62,14 @@ class VectorizedAuxiliaryParticleFilter:
         
         expected_measurements = expected_measurements_torch.cpu().numpy()
         
-        # 2. Výpočet reziduí (inovací) pro všechny částice
+        # 2. Compute residuals (innovations) for all particles
         # Broadcasting: (obs_dim,) - (N, obs_dim) -> (N, obs_dim)
         residuals = z_np - expected_measurements
         
-        # 3. Vyhodnocení PDF
-        # Matematický trik: p(z | x) ~ N(z; h(x), R) je ekvivalentní N(z - h(x); 0, R)
-        # Tím pádem můžeme použít jedno rozdělení N(0, R) a jen do něj sypat rezidua.
-        # Pokud je R konstantní, použijeme self.mvn_R, jinak vytvoříme nové.
+        # 3. Evaluate PDF
+        # Mathematical trick: p(z | x) ~ N(z; h(x), R) is equivalent to N(z - h(x); 0, R)
+        # Therefore we can use one distribution N(0, R) and just feed residuals into it.
+        # If R is constant, we use self.mvn_R, otherwise we create a new one.
         if np.array_equal(R_np, self.R_np_default):
             likelihoods = self.mvn_R.pdf(residuals)
         else:
@@ -87,7 +87,7 @@ class VectorizedAuxiliaryParticleFilter:
 
     def _multinomial_resample_indices(self, weights):
         """
-        Zůstává stejné, už to bylo efektivní.
+        Remains the same, it was already efficient.
         """
         cumulative_sum = np.cumsum(weights)
         cumulative_sum[-1] = 1.0
@@ -97,7 +97,7 @@ class VectorizedAuxiliaryParticleFilter:
 
     def get_estimate(self, particles, weights):
         """
-        Vektorizovaný výpočet váženého průměru a kovariance.
+        Vectorized computation of weighted mean and covariance.
         """
         # Mean: (dim,)
         mean = np.average(particles, weights=weights, axis=0)
@@ -120,72 +120,72 @@ class VectorizedAuxiliaryParticleFilter:
         Ex0_np = Ex0.cpu().numpy().flatten() if Ex0 is not None else self.Ex0_np
         P0_np = P0.cpu().numpy() if P0 is not None else self.P0_np
             
-        # Pokud se R liší od defaultu, aktualizujeme mvn objekt pro rychlost
+        # If R differs from default, we update mvn object for speed
         if not np.array_equal(R_np, self.R_np_default):
              self.mvn_R = multivariate_normal(mean=np.zeros(self.obs_dim), cov=R_np)
 
-        # Pre-alokace historie pro rychlost
+        # Pre-allocation of history for speed
         x_filtered_history = torch.zeros(seq_len, self.state_dim, device=self.device)
         P_filtered_history = torch.zeros(seq_len, self.state_dim, self.state_dim, device=self.device)
         particles_history = []
         
-        # Inicializace
+        # Initialization
         current_particles = np.random.multivariate_normal(Ex0_np, P0_np, size=self.N)
         current_weights = np.full(self.N, 1.0 / self.N)
         
-        # Uložení počátečního stavu
+        # Save initial state
         x_est, P_est = self.get_estimate(current_particles, current_weights)
         x_filtered_history[0] = x_est.squeeze()
         P_filtered_history[0] = P_est
         particles_history.append(current_particles.copy())
 
-        # HLAVNÍ SMYČKA
+        # MAIN LOOP
         for k in tqdm(range(1, seq_len), desc="APF Vectorized"):
             
-            # --- APF Fáze 1: Charakterizace (Mean predikce) ---
-            # Vektorizovaně spočítáme "mu" pro všechny částice
+            # --- APF Phase 1: Characterization (Mean prediction) ---
+            # Vectorized computation of "mu" for all particles
             char_particles = self._propagate_particles(current_particles, Q_np)
             
-            # Vektorizovaně spočítáme p(z_k | mu)
+            # Vectorized computation of p(z_k | mu)
             char_likelihoods = self._compute_likelihoods(char_particles, y_seq_np[k], R_np)
             
-            # Pomocné váhy
+            # Auxiliary weights
             aux_weights = current_weights * char_likelihoods
             aux_weights = self._normalize_weights(aux_weights)
 
-            # --- APF Fáze 2: Resampling indexů ---
+            # --- APF Phase 2: Resampling indices ---
             parent_indices = self._multinomial_resample_indices(aux_weights)
             
-            # Vybereme rodiče pomocí "Fancy Indexing" (rychlé)
+            # Select parents using "Fancy Indexing" (fast)
             # parents shape: (N, state_dim)
             parents = current_particles[parent_indices]
             
-            # Potřebujeme i likelihoods rodičů pro jmenovatele ve fázi 4
+            # We also need parent likelihoods for denominator in phase 4
             # parent_char_likelihoods shape: (N,)
             parent_char_likelihoods = char_likelihoods[parent_indices]
 
-            # --- APF Fáze 3: Finální Propagace ---
-            # Propagujeme vybrané rodiče (plný stochastický krok)
+            # --- APF Phase 3: Final Propagation ---
+            # Propagate selected parents (full stochastic step)
             new_particles = self._propagate_particles(parents, Q_np)
 
-            # --- APF Fáze 4: Váhy ---
+            # --- APF Phase 4: Weights ---
             # p(z_k | x_k)
             final_likelihoods = self._compute_likelihoods(new_particles, y_seq_np[k], R_np)
             
-            # Ošetření dělení nulou
+            # Guard against division by zero
             safe_denom = np.maximum(parent_char_likelihoods, 1e-10)
             
             # w_k = p(z|x) / p(z|mu)
             new_weights = final_likelihoods / safe_denom
             
-            # Normalizace a update
+            # Normalization and update
             current_weights = self._normalize_weights(new_weights)
             current_particles = new_particles
             
-            # Ukládání (volitelné: particles_history bere hodně paměti, u velkých N zvaž vypnout)
+            # Saving (optional: particles_history uses a lot of memory, consider disabling for large N)
             particles_history.append(current_particles.copy())
             
-            # Odhad stavu
+            # State estimate
             x_est, P_est = self.get_estimate(current_particles, current_weights)
             x_filtered_history[k] = x_est.squeeze()
             P_filtered_history[k] = P_est

@@ -60,34 +60,34 @@ class StateKalmanNet(nn.Module):
         
     def step(self,y_t):
         """
-        Provede jeden kompletní krok filtrace pro jedno měření y_t s dimenzí batch_size.
+        Performs one complete filtering step for a single measurement y_t with batch_size dimension.
         """
 
         batch_size = y_t.shape[0]
         y_t = y_t.to(self.device)
 
 
-        # 1. PREDIKCE (Time Update) - Vždy proběhne
-        # Použijeme f(x, u) - pokud máme vstup u_t, použijeme ho
+        # 1. PREDICTION (Time Update) - Always performed
+        # Use f(x, u) - if we have input u_t, use it
         x_pred_raw = self.system_model.f(self.x_filtered_prev) # [B, m]
         
-        # Predikce měření (očekávané y)
+        # Measurement prediction (expected y)
         y_pred_raw = self.system_model.h(x_pred_raw) # [B, n]
-        # `y_predicted` Tvar: [batch_size, obs_dim]
+        # `y_predicted` Shape: [batch_size, obs_dim]
 
-        # Inovace: Rozdíl mezi skutečným a predikovaným měřením.
-        # Tvar: [batch_size, obs_dim]
+        # Innovation: Difference between actual and predicted measurement.
+        # Shape: [batch_size, obs_dim]
         innovation = y_t - y_pred_raw
         obs_diff = y_t - self.y_prev
 
         # F3: Difference of posterior estimates
         fw_evol_diff = self.x_filtered_prev - self.x_filtered_prev_prev
 
-        # F4: Rozdíl (update)
+        # F4: Difference (update)
         fw_update_diff = self.x_filtered_prev - self.x_pred_prev
 
-        # Normalizace (pokud používáš log, musíš ošetřit nuly/záporná čísla)
-        # Zde necháváme identitu dle tvého kódu
+        # Normalization (if you use log, you must handle zeros/negative numbers)
+        # Here we keep identity according to your code
         norm_obs_diff = func.normalize(obs_diff, p=2, dim=1, eps=1e-12)
         norm_innovation = func.normalize(innovation, p=2, dim=1, eps=1e-12)
         norm_fw_evol_diff = func.normalize(fw_evol_diff, p=2, dim=1, eps=1e-12)
@@ -96,7 +96,7 @@ class StateKalmanNet(nn.Module):
         # norm_innovation = innovation
         # norm_fw_evol_diff = fw_evol_diff
         # norm_fw_update_diff = fw_update_diff
-        # normalizovaný rozdíl z minulého kroku
+        # normalized difference from previous step
         K_vec, h_new = self.dnn(
             norm_obs_diff,       # F1
             norm_innovation,     # F2
@@ -106,22 +106,22 @@ class StateKalmanNet(nn.Module):
         )
         
         K = K_vec.reshape(batch_size, self.state_dim, self.obs_dim)
-        # `K` Tvar: [batch_size, state_dim, obs_dim]
+        # `K` Shape: [batch_size, state_dim, obs_dim]
         self.K_history.append(K.detach().clone())
         # `innovation.unsqueeze(-1)` -> [batch_size, obs_dim, 1]
         # `K @ ...` -> [batch_size, state_dim, obs_dim] @ [batch_size, obs_dim, 1] -> [batch_size, state_dim, 1]
         correction = (K @ innovation.unsqueeze(-1)).squeeze(-1)
         x_filtered_raw = x_pred_raw + correction
-        # `x_filtered` Tvar: [batch_size, state_dim]
+        # `x_filtered` Shape: [batch_size, state_dim]
 
 
 
         if self.returns_covariance:
             P_filtered_list = []
-            with torch.no_grad(): # pro jistotu vypnutí gradienty
+            with torch.no_grad(): # for safety disable gradients
                 R = self.system_model.R
                 for i in range(batch_size):
-                    K_i = K[i]  # Kalmanův zisk pro i-tý prvek v batche
+                    K_i = K[i]  # Kalman gain for i-th element in batch
                     
                     x_filtered_i = x_filtered_raw[i]
 
@@ -148,12 +148,12 @@ class StateKalmanNet(nn.Module):
                         print("Failed at Uncertainty Analysis of KalmanNet V1")
             P_filtered = torch.stack(P_filtered_list)
 
-        # Update historie
+        # Update history
         self.x_filtered_prev_prev = self.x_filtered_prev.clone() 
         self.x_pred_prev = x_pred_raw.clone()         
         self.x_filtered_prev = x_filtered_raw.clone()      
         
-        # Update y_prev: Pokud chybí data, držíme poslední známé (nebo y_pred)
+        # Update y_prev: If data is missing, keep last known (or y_pred)
         self.y_prev = y_t.clone()                    
         self.h_prev = h_new                            
 
@@ -202,8 +202,8 @@ class StateKalmanNet(nn.Module):
     
     def get_kalman_gain_history(self):
         """
-        Vrátí historii Kalmanových zisků pro aktuální sekvenci.
-        Výstupní tvar: [sequence_length, batch_size, state_dim, obs_dim]
+        Returns the history of Kalman gains for the current sequence.
+        Output shape: [sequence_length, batch_size, state_dim, obs_dim]
         """
         if not self.K_history:
             return None

@@ -4,8 +4,8 @@ from scipy.stats import multivariate_normal
 
 class ParticleFilterMH:
     """
-    Implementace SIR filtru s Resample-Move krokem (Metropolis-Hastings).
-    Tato třída implementuje Algorithm 3 a Algorithm 4 z článku.
+    Implementation of SIR filter with Resample-Move step (Metropolis-Hastings).
+    This class implements Algorithm 3 and Algorithm 4 from the paper.
     """
     
     def __init__(self, system_model, num_particles=1000):
@@ -59,7 +59,7 @@ class ParticleFilterMH:
         
     def _metropolis_hastings_move(self, resampled_particles, parent_particles_before_resampling, z_np, Q_np, R_np):
         """
-        implementace Algorithm 4 z článku.
+        Implementation of Algorithm 4 from the paper.
         """
         final_particles = resampled_particles.copy()
         
@@ -67,16 +67,16 @@ class ParticleFilterMH:
             # Step 1: sample a threshold from a uniform distribution
             u_prime = np.random.rand()
 
-            # původní resamplovaná částice (x_k^i)
+            # original resampled particle (x_k^i)
             particle_old = resampled_particles[i]
             
-            # Nalezení "rodiče" z času k-1 (x_{k-1}^j). 
-            # Předpoklad, že i-tá resamplovaná částice
-            # pochází z i-tého rodiče před resampligem.
+            # Find "parent" from time k-1 (x_{k-1}^j).
+            # Assumption that i-th resampled particle
+            # originates from i-th parent before resampling.
             parent_particle = parent_particles_before_resampling[i]
             
             # Step 2: propagate particle previous time step
-            # Vytvoříme nového kandidáta x_k' z rodiče
+            # Create new candidate x_k' from parent
             particle_new = self._propagate_particle(parent_particle, Q_np)
 
             # Step 3: likelihood for propagated particle step 2
@@ -125,7 +125,7 @@ class ParticleFilterMH:
 
         for k in range(1, seq_len):
             
-            # Uchováme si rodiče z k-1 pro MH krok
+            # Keep parents from k-1 for MH step
             parent_particles_for_mh = current_particles.copy()
 
             temp_propagated_particles = np.empty((self.N, self.state_dim))

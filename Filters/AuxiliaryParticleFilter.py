@@ -98,7 +98,7 @@ class AuxiliaryParticleFilter:
         
         particles_history = []
         
-        # Inicializace
+        # Initialization
         current_particles = np.random.multivariate_normal(Ex0_np, P0_np, size=self.N)
         current_weights = np.full(self.N, 1.0 / self.N)
         

@@ -3,8 +3,8 @@ import torch
 class UnscentedKalmanFilter:
     def __init__(self, system_model):
         """
-        Inicializace zjednodušeného, ale robustního a vektorizovaného UKF.
-        Tato verze nepoužívá parametry alpha, beta, kappa.
+        Initialization of simplified but robust and vectorized UKF.
+        This version does not use parameters alpha, beta, kappa.
         """
         self.device = system_model.Q.device
         
@@ -23,7 +23,7 @@ class UnscentedKalmanFilter:
         self.x_filtered_prev = None
         self.P_filtered_prev = None
 
-        # Interní stav pro online použití: predikce pro aktuální krok
+        # Internal state for online use: prediction for current step
         self.x_predict_current = None
         self.P_predict_current = None
 
@@ -31,7 +31,7 @@ class UnscentedKalmanFilter:
 
     def reset(self, Ex0, P0):
         """
-        Inicializuje nebo resetuje interní stav filtru pro online použití.
+        Initializes or resets internal filter state for online use.
         """
         self.x_predict_current = Ex0.clone().detach().reshape(self.state_dim, 1)
         self.P_predict_current = P0.clone().detach()
@@ -39,21 +39,21 @@ class UnscentedKalmanFilter:
 
     def _get_sigma_points(self, x_mean, P):
         """
-        Vypočítá sigma body na základě průměru a kovariance.
+        Computes sigma points based on mean and covariance.
         """
         try:
-            # Přidání malého jitteru pro numerickou stabilitu
+            # Add small jitter for numerical stability
             jitter = torch.eye(self.state_dim, device=self.device) * 1e-12
             S = torch.linalg.cholesky(P + jitter, upper=False)
         except torch.linalg.LinAlgError:
-            print("Cholesky selhal! Používám vlastní odmocninu matice.")
+            print("Cholesky failed! Using custom matrix square root.")
             eigvals, eigvecs = torch.linalg.eigh(P)
             S = eigvecs @ torch.diag(torch.sqrt(eigvals.clamp(min=0))) @ eigvecs.T
 
         # scale = torch.sqrt(torch.tensor(self.state_dim, device=self.device, dtype=torch.float32))
         n = self.state_dim
         scale = torch.sqrt(torch.tensor((n * 2 + 1) / 2.0, device=self.device, dtype=torch.float32))
-        # Vytvoření sigma bodů (x_mean musí být sloupcový vektor [state_dim, 1])
+        # Creation of sigma points (x_mean must be column vector [state_dim, 1])
         sigma_points = x_mean.repeat(1, self.n_sigma_points)
         sigma_points[:, 1:self.state_dim + 1] += scale * S
         sigma_points[:, self.state_dim + 1:] -= scale * S
@@ -97,8 +97,8 @@ class UnscentedKalmanFilter:
 
     def step(self, y_t):
         """
-        Provede jeden kompletní krok filtrace pro ONLINE použití.
-        Vrací nejlepší odhad pro aktuální čas 't'.
+        Performs one complete filtering step for ONLINE use.
+        Returns best estimate for current time 't'.
         """
         x_filtered, P_filtered, _, _ = self.update_step(self.x_predict_current, self.P_predict_current, y_t)
 
@@ -112,8 +112,8 @@ class UnscentedKalmanFilter:
 
     def process_sequence(self, y_seq, Ex0=None, P0=None):
         """
-        Zpracuje celou sekvenci měření.
-        Tato metoda je nyní plně kompatibilní s vaším vyhodnocovacím skriptem.
+        Processes entire measurement sequence.
+        This method is now fully compatible with your evaluation script.
         """
         x_est = Ex0.clone().detach().reshape(self.state_dim, 1)
         P_est = P0.clone().detach()

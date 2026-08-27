@@ -6,8 +6,8 @@ from tqdm import tqdm
 
 class KalmanFilter:
     """
-    Kalmanův filtr pro t-invaritantní systém s lineární dynamikou.
-    (Původní implementace beze změn)
+    Kalman filter for time-invariant system with linear dynamics.
+    (Original implementation unchanged)
     """
     def __init__(self,model):
         self.device = model.Q.device
@@ -21,7 +21,7 @@ class KalmanFilter:
         self.state_dim = self.F.shape[0]
         self.obs_dim = self.H.shape[0]
 
-        # Interní stav pro online použití
+        # Internal state for online use
         self.x_predict_current = None
         self.P_predict_current = None
         self.reset(model.Ex0, model.P0)
@@ -89,8 +89,8 @@ class KalmanFilter:
 class AdaptiveKalmanFilter_online:
     def __init__(self, model, mdm_L=4, mdm_version=1, lambda_rls=0.995, init_sigma_rls_value=10.0, alpha_nom=None):
         """
-        Adaptivní KF (Semi-weighted Recursive verze - Sw-Re).
-        Tato třída provádí online identifikaci matic Q a R.
+        Adaptive KF (Semi-weighted Recursive version - Sw-Re).
+        This class performs online identification of Q and R matrices.
         """
         self.kf = KalmanFilter(model)
         self.device = model.Q.device
@@ -101,8 +101,8 @@ class AdaptiveKalmanFilter_online:
         self.lambda_rls = lambda_rls
         self.init_sigma_val = init_sigma_rls_value
         self.alpha_nom_val = alpha_nom
-        self.nw = self.kf.F.shape[0] # Dimenze stavového šumu (W)
-        self.nv = self.kf.H.shape[0] # Dimenze šumu měření (V)
+        self.nw = self.kf.F.shape[0] # Dimension of state noise (W)
+        self.nv = self.kf.H.shape[0] # Dimension of measurement noise (V)
         
         self.T = T = 1.0
         T2 = (T**2) / 2.0
@@ -126,7 +126,7 @@ class AdaptiveKalmanFilter_online:
         self.T_R_matrix[4, 1] = 1.0 
         self.T_R_matrix[9, 1] = 1.0 
         
-        # 3. INICIALIZACE RLS
+        # 3. RLS INITIALIZATION
         self.n_params = self.n_params_Q_reduced + self.n_params_R_reduced
 
         Q0 = model.Q.cpu().numpy()
@@ -140,25 +140,25 @@ class AdaptiveKalmanFilter_online:
         self.alpha_nom = np.array(self.alpha_nom_val, dtype=self.np_dtype)
 
 
-        # init_sigma_val je RELATIVNÍ nejistota (např. 0.1 = 10%)
-        # alpha_nom jsou nominální hodnoty pro Q a R, které určují měřítko pro sigma_q a sigma_r
-        # umocnění na druhou, protože se jedná o hodnoty, které odhaduje RLS, a ty jsou v jednotkách Q a R
-        # ne v jednotkách jejich parametrů (např. q vs q^2)
+        # init_sigma_val is RELATIVE uncertainty (e.g. 0.1 = 10%)
+        # alpha_nom are nominal values for Q and R which determine scale for sigma_q and sigma_r
+        # squared because these are values estimated by RLS, units are Q and R
+        # not units of their parameters (e.g. q vs q^2)
         sigma_q  = (self.alpha_nom[0] * self.init_sigma_val)**2 + 1e-12
         sigma_r1 = (self.alpha_nom[1] * self.init_sigma_val)**2 + 1e-12
         sigma_r2 = (self.alpha_nom[2] * self.init_sigma_val)**2 + 1e-12
         self.Sigma_RLS = np.diag([sigma_q, sigma_r1, sigma_r2])
-        # Buffery
+        # Buffers
         self.z_buffer = []
         self.u_buffer = []
         self.Upsilon_2 = None
 
     def _get_upsilon(self):
         """
-        Pomocná funkce pro získání matice Upsilon.
-        Tato matice je čistě strukturální (záleží jen na dimenzích) a slouží
-        k manipulaci s Kroneckerovými součiny v rámci MDM teorie.
-        Počítá se jen jednou.
+        Helper function to get Upsilon matrix.
+        This matrix is purely structural (depends only on dimensions) and serves
+        for manipulation with Kronecker products within MDM theory.
+        Computed only once.
         """
         if self.Upsilon_2 is None:
             w2b = [baseMatrix_fun(self.nw, 1)] 
@@ -169,7 +169,7 @@ class AdaptiveKalmanFilter_online:
 
     def step_adaptive(self, y_t, u_t=None):
         """
-        Jeden krok adaptivního filtru s UNWEIGHTED RLS.
+        One step of adaptive filter with UNWEIGHTED RLS.
         """
         y_np = y_t.cpu().numpy().squeeze()
         if y_np.ndim == 0: y_np = np.expand_dims(y_np, axis=0)
@@ -183,13 +183,13 @@ class AdaptiveKalmanFilter_online:
         self.z_buffer.append(y_np)
         self.u_buffer.append(u_np)
         
-        # Udržování fixní délky okna L (FIFO fronta)
+        # Maintaining fixed window length L (FIFO queue)
         if len(self.z_buffer) > self.mdm_L:
             self.z_buffer.pop(0)
             self.u_buffer.pop(0)
 
-        # --- 2. Identifikace Q a R (RLS) ---
-        # Spustí se pouze, pokud je buffer plný (dost dat pro MDM)
+        # --- 2. Q and R Identification (RLS) ---
+        # Runs only if buffer is full (enough data for MDM)
         if len(self.z_buffer) == self.mdm_L:
             try:
                 z_window = np.array(self.z_buffer)
@@ -197,14 +197,14 @@ class AdaptiveKalmanFilter_online:
                 
                 F_np = self.kf.F.cpu().numpy()
                 H_np = self.kf.H.cpu().numpy()
-                G_np = np.zeros((self.nw, u_window.shape[1]), dtype=self.np_dtype) # matice pro vstup u 
+                G_np = np.zeros((self.nw, u_window.shape[1]), dtype=self.np_dtype) # matrix for input u 
                 E_np = np.eye(self.nw, dtype=self.np_dtype)
                 D_np = np.eye(self.nv, dtype=self.np_dtype)
                 nz_np = np.array([self.nv])
 
-                # MDM: Výpočet rezidua a regresoru
-                # r_k: Vektor reziduí, který nese informaci o šumu v datech
-                # Awv_matrix: Pomocná matice popisující dynamiku systému v okně
+                # MDM: Residual and regressor calculation
+                # r_k: Residual vector carrying information about noise in the data
+                # Awv_matrix: Auxiliary matrix describing system dynamics in the window
                 r_list, Awv_matrix = MDM_nullO_LTI(
                     self.mdm_L, F_np, G_np, E_np, nz_np, H_np, D_np, 
                     z_window, u_window, self.mdm_version
@@ -212,41 +212,41 @@ class AdaptiveKalmanFilter_online:
                 r_k = r_list[0]
                 
                 nr = r_k.shape[0]
-                Ksi = Ksi_fun(nr) # Unifikační matice (vybírá unikátní prvky ze symetrické matice)
+                Ksi = Ksi_fun(nr) # Unification matrix (selects unique elements from symmetric matrix)
                 
-                # Pozorování pro RLS (y_rls):
-                # Vychází z vnějšího součinu rezidua (r_k * r_k^T), což je "okamžitá kovariance".
-                # kron2_vec to převede na vektor a Ksi vybere unikátní prvky.
+                # Observation for RLS (y_rls):
+                # Derived from the outer product of residual (r_k * r_k^T), which is "instantaneous covariance".
+                # kron2_vec converts it to vector and Ksi selects unique elements.
                 y_rls = Ksi @ kron2_vec(r_k)
                 
                 Upsilon = self._get_upsilon()
                 H_full = Ksi @ kron2_mat(Awv_matrix) @ Upsilon
 
-                # Rozdělení na Q část a R část
+                # Split into Q part and R part
                 H_Q_part_full = H_full[:, :self.n_params_Q_full] 
                 H_R_part_full = H_full[:, self.n_params_Q_full:]
                 
-                # Transformace Q (10 sloupců -> 1 sloupec)
+                # Transform Q (10 columns -> 1 column)
                 h_q_new = H_Q_part_full @ self.vec_Q_template
 
-                # Transformace R (10 sloupců -> 2 sloupce)
-                # Výsledek má tvar [N, 2]. První sloupec je citlivost na r1, druhý na r2.
+                # Transform R (10 columns -> 2 columns)
+                # Result shape [N, 2]. First column is sensitivity to r1, second to r2.
                 H_R_new = H_R_part_full @ self.T_R_matrix
 
                 H_rls = np.hstack([h_q_new, H_R_new])
                 
-                # Zploštění vektoru y_rls (pojistka proti maticovým chybám)
+                # Flatten y_rls vector (safety against matrix errors)
                 y_rls_flat = y_rls.flatten()
                 
-                # Výpočet vah na základě nominálních hodnot
+                # Weight calculation based on nominal values
                 y_expected_nom = np.abs(H_rls @ self.alpha_nom).flatten()
                 weights = y_expected_nom + 1e-12
                 
-                # Normalizace rovnic (vydělení vahami)
+                # Equation normalization (division by weights)
                 y_rls_norm = y_rls_flat / weights
                 H_rls_norm = H_rls / weights[:, np.newaxis]
                 
-                # RLS Update na znormalizovaných datech
+                # RLS update on normalized data
                 dim_obs_rls = H_rls_norm.shape[0]
                 Omega_norm = np.eye(dim_obs_rls, dtype=self.np_dtype)
 
@@ -263,12 +263,12 @@ class AdaptiveKalmanFilter_online:
                 q_est = self.alpha_est[0]
                 Q_new = q_est * self.Q_template
                 
-                # 2. R (parametry r1, r2)
-                # r1_est = max(self.alpha_est[1], 1e-10) # Ošetření záporných hodnot
+                # 2. R (parameters r1, r2)
+                # r1_est = max(self.alpha_est[1], 1e-10) # Handle negative values
                 # r2_est = max(self.alpha_est[2], 1e-10)
                 r1_est = self.alpha_est[1]
                 r2_est = self.alpha_est[2]
-                # Sestavení diagonální matice diag([r1, r2, r1, r2])
+                # Build diagonal matrix diag([r1, r2, r1, r2])
                 R_new = np.diag([r1_est, r2_est, r1_est, r2_est])
                 
                 # Update KF
@@ -276,20 +276,20 @@ class AdaptiveKalmanFilter_online:
                 self.kf.R = torch.from_numpy(R_new).to(self.device).to(self.dtype)
                 
             except Exception as e:
-                print(f"Chyba v RLS aktualizaci: {e}")
+                print(f"Error in RLS update: {e}")
                 pass
 
-        # standardní krok Kalmanova filtru s aktuálními Q a R
+        # standard Kalman filter step with current Q and R
         x_filt, P_filt, K = self.kf.step(y_t)
         return x_filt, P_filt, K, self.kf.Q, self.kf.R
 
     def process_sequence_adaptively(self, y_seq, u_seq=None, Ex0=None, P0=None):
         """
-        Pomocná metoda pro simulaci běhu na celé sekvenci dat.
+        Helper method for simulating run on a complete data sequence.
         """
         seq_len = y_seq.shape[0]
         
-        # Kompletní reset
+        # Complete reset
         self.__init__(
             self.kf.model, 
             self.mdm_L, 
@@ -302,34 +302,10 @@ class AdaptiveKalmanFilter_online:
         if Ex0 is None: Ex0 = self.kf.model.Ex0
         if P0 is None: P0 = self.kf.model.P0
 
-        # Reset vnitřního KF
+        # Reset internal KF
         self.kf.reset(Ex0, P0)
         
         self.z_buffer = []
         self.u_buffer = []
 
-        x_hist = torch.zeros(seq_len, self.kf.state_dim, device=self.device, dtype=self.dtype)
-        P_hist = torch.zeros(seq_len, self.kf.state_dim, self.kf.state_dim, device=self.device, dtype=self.dtype)
-        K_hist = torch.zeros(seq_len, self.kf.state_dim, self.kf.obs_dim, device=self.device, dtype=self.dtype)
-        Q_hist = []
-        R_hist = []
-
-        for k in tqdm(range(seq_len), desc="Processing sequence adaptively"):
-            y_t = y_seq[k]
-            u_t = u_seq[k] if u_seq is not None else None
-            
-            x, P, K_curr, Q_curr, R_curr = self.step_adaptive(y_t, u_t)
-            
-            x_hist[k] = x.squeeze()
-            P_hist[k] = P
-            K_hist[k] = K_curr
-            Q_hist.append(Q_curr.clone().detach())
-            R_hist.append(R_curr.clone().detach())
-            
-        results_dict = {
-            'x_filtered': x_hist,
-            'P_filtered': P_hist,
-            'Kalman_gain': K_hist
-        }
-        
-        return results_dict, Q_hist, R_hist
+        x_hist = torch.zeros(seq_len, self.kf.state_dim

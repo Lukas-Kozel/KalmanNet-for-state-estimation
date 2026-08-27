@@ -14,7 +14,7 @@ class RNN_NCLT(nn.Module):
         self.obs_dim = system_model.obs_dim
         self.input_dim = 4 # NCLT input dim
         
-        # Inicializace DNN
+        # Initialize DNN
         self.dnn = DNN_RNN(
             system_model, 
             n_gru_layers=n_gru_layers,
@@ -22,11 +22,11 @@ class RNN_NCLT(nn.Module):
             out_mult=out_mult
         ).to(device)
         
-        # Buffery pro stav
+        # Buffers for state
         self.x_prev = None      
         self.hn = None          
         
-        # Buffery pro "Sample-and-Hold" strategii (paměť senzorů)
+        # Buffers for "Sample-and-Hold" strategy (sensor memory)
         self.last_valid_y = None
         self.last_valid_u = None
         
@@ -47,7 +47,7 @@ class RNN_NCLT(nn.Module):
             device=self.device
         )
         
-        # Reset paměti senzorů (na nuly, protože na začátku nic lepšího nemáme)
+        # Reset sensor memory (to zeros, because there is nothing better at the start)
         self.last_valid_y = torch.zeros(batch_size, self.obs_dim, device=self.device)
         self.last_valid_u = torch.zeros(batch_size, self.input_dim, device=self.device)
 
@@ -55,21 +55,21 @@ class RNN_NCLT(nn.Module):
         y_t = y_t.to(self.device)
         u_t = u_t.to(self.device)
         
-        # --- ROBUSTNÍ IMU/GPS IMPUTATION (Sample-and-Hold) ---
+        # --- ROBUST IMU/GPS IMPUTATION (Sample-and-Hold) ---
         
-        # 1. Zjistíme, kde jsou NaN
+        # 1. Find where NaNs are
         y_isnan = torch.isnan(y_t)
         u_isnan = torch.isnan(u_t)
         
-        # 2. Nahradíme NaN hodnotami z minulého kroku
-        # Použijeme torch.where: Kde je NaN, vezmi last_valid, jinak vezmi aktuální y_t
+        # 2. Replace NaNs with values from previous step
+        # Use torch.where: Where NaN, take last_valid, otherwise take current y_t
         y_t_imputed = torch.where(y_isnan, self.last_valid_y, y_t)
         u_t_imputed = torch.where(u_isnan, self.last_valid_u, u_t)
         
-        # 3. Aktualizujeme last_valid jen tam, kde data BYLA platná
-        # (Pokud je teď NaN, last_valid se nemění. Pokud je číslo, přepíšeme ho.)
+        # 3. Update last_valid only where data WAS valid
+        # (If now NaN, last_valid does not change. If it is a number, overwrite it.)
         self.last_valid_y = torch.where(y_isnan, self.last_valid_y, y_t)
-        # Pojistka pro případ, že hned první vzorek je NaN (zůstane 0.0, to je OK)
+        # Safeguard in case the very first sample is NaN (remains 0.0, which is OK)
         self.last_valid_y = torch.nan_to_num(self.last_valid_y, nan=0.0) 
 
         self.last_valid_u = torch.where(u_isnan, self.last_valid_u, u_t)
@@ -77,10 +77,10 @@ class RNN_NCLT(nn.Module):
         
         # ---
         
-        # Forward pass s "čistými" daty
+        # Forward pass with "clean" data
         delta_x, h_new = self.dnn(self.x_prev, y_t_imputed, u_t_imputed, self.hn)
         x_new = self.x_prev + delta_x
-        # Update historie
+        # Update history
         self.x_prev = x_new
         self.hn = h_new
         
@@ -90,8 +90,8 @@ class RNN_NCLT(nn.Module):
         self.x_prev = self.x_prev.detach()
         if self.hn is not None:
             self.hn = self.hn.detach()
-        # Buffery last_valid není třeba detachovat, protože nevstupují do grafu gradientů přímo,
-        # ale pro jistotu (aby se neuvolnily z paměti divně) to ničemu nevadí:
+        # last_valid buffers do not need to be detached because they do not enter the gradient graph directly,
+        # but for safety (so they are not freed from memory strangely) it does not hurt:
         self.last_valid_y = self.last_valid_y.detach()
         self.last_valid_u = self.last_valid_u.detach()
 

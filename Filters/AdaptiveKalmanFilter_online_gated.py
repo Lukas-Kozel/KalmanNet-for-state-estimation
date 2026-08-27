@@ -17,11 +17,11 @@ class KalmanFilterGated:
         self.reset(model.Ex0, model.P0)
 
     def reset(self, Ex0, P0):
-        # Ex0 je nyní dynamicky předáváno na začátku každé sekvence
+        # Ex0 is now dynamically passed at the start of each sequence
         self.x_predict_current = Ex0.clone().detach().reshape(self.state_dim, 1)
         self.P_predict_current = P0.clone().detach()
 
-    def step(self, y_t, gate_threshold=9.21): # 9.21 = Chi-Sq 99% limit pro 2 DOF
+    def step(self, y_t, gate_threshold=9.21): # 9.21 = Chi-Sq 99% limit for 2 DOF
         rejected = False
         if y_t is not None:
             y_t_vec = y_t.reshape(self.obs_dim, 1)
@@ -29,8 +29,8 @@ class KalmanFilterGated:
             S = self.H @ self.P_predict_current @ self.H.T + self.R
             S_inv = torch.linalg.inv(S)
             
-            # --- PARCIÁLNÍ GATING (Pouze na pozici X a Y) ---
-            # X je index 0, Y je index 2
+            # --- PARTIAL GATING (Only on X and Y position) ---
+            # X is index 0, Y is index 2
             inov_gps = torch.cat([inov[0:1], inov[2:3]], dim=0) # [2, 1]
             
             S_gps = torch.zeros((2, 2), device=self.device, dtype=self.dtype)
@@ -44,7 +44,7 @@ class KalmanFilterGated:
                 rejected = True
 
         if y_t is None or rejected:
-            # PREDICT ONLY (Měření zahozeno nebo chybí)
+            # PREDICT ONLY (Measurement discarded or missing)
             x_filtered = self.x_predict_current
             P_filtered = self.P_predict_current
             K = torch.zeros((self.state_dim, self.obs_dim), device=self.device, dtype=self.dtype)
@@ -55,7 +55,7 @@ class KalmanFilterGated:
             I_KH = self.I - K @ self.H
             P_filtered = I_KH @ self.P_predict_current @ I_KH.T + K @ self.R @ K.T
 
-        # PREDICT PRO DALŠÍ KROK
+        # PREDICT FOR NEXT STEP
         x_predict_next = self.F @ x_filtered
         P_predict_next = self.F @ P_filtered @ self.F.T + self.Q
         
@@ -125,7 +125,7 @@ class AdaptiveKalmanFilter_online_Gated:
         x_filt, P_filt, K, rejected = self.kf.step(y_t, gate_threshold)
         
         if rejected:
-            # Měření je OUTLIER. Vymažeme buffer, neadaptujeme se.
+            # Measurement is OUTLIER. Clear buffer, do not adapt.
             self.z_buffer = []
             self.u_buffer = []
             return x_filt, P_filt, K, self.kf.Q, self.kf.R

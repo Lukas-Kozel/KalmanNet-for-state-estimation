@@ -9,8 +9,8 @@ class PositionalEncoding(nn.Module):
         super().__init__()
         self.dropout = nn.Dropout(p=dropout)
         
-        position = torch.arange(max_len).unsqueeze(1) # Tvar [max_len, 1]
-        div_term = torch.exp(torch.arange(0, d_model, 2) * (-math.log(10000.0) / d_model)) # Tvar [d_model/2]
+        position = torch.arange(max_len).unsqueeze(1) # Shape [max_len, 1]
+        div_term = torch.exp(torch.arange(0, d_model, 2) * (-math.log(10000.0) / d_model)) # Shape [d_model/2]
         
         pe = torch.zeros(1, max_len, d_model)
         

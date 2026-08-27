@@ -13,7 +13,7 @@ class StateKalmanNetTAN(nn.Module):
                  num_gru_layers=1,
                  gru_hidden_dim_multiplier=1,
                  use_log_modulus=False,
-                 use_terrain_grad=True):  # <--- NEW ARGUMENT
+                 use_terrain_grad=True):
         
         super(StateKalmanNetTAN, self).__init__()
         
@@ -23,7 +23,7 @@ class StateKalmanNetTAN(nn.Module):
         self.state_dim = system_model.state_dim
         self.obs_dim = system_model.obs_dim
         self.use_log_modulus = use_log_modulus
-        self.use_terrain_grad = use_terrain_grad # <--- STORE FLAG
+        self.use_terrain_grad = use_terrain_grad
 
         # Passed the flag down to the DNN so it can adjust its input dimension dynamically
         self.dnn = DNN_KalmanNetTAN(
@@ -32,7 +32,7 @@ class StateKalmanNetTAN(nn.Module):
             output_layer_multiplier=output_layer_multiplier, 
             num_gru_layers=num_gru_layers,
             gru_hidden_dim_multiplier=gru_hidden_dim_multiplier,
-            use_terrain_grad=self.use_terrain_grad # <--- NEW ARGUMENT PASSED TO DNN
+            use_terrain_grad=self.use_terrain_grad
         ).to(device)
 
         self.h_prev = None                  
@@ -72,7 +72,7 @@ class StateKalmanNetTAN(nn.Module):
         y_t_raw = y_t_raw.to(self.device) # [B, n]
         batch_size = y_t_raw.shape[0]
 
-        # 1. PREDIKCE (Time Update) - Vždy proběhne
+        # 1. PREDICTION (Time Update) - Always executed
         x_pred_raw = self.system_model.f(self.x_filtered_prev) # [B, m]
         y_pred_raw = self.system_model.h(x_pred_raw) # [B, n]
         
@@ -97,19 +97,19 @@ class StateKalmanNetTAN(nn.Module):
             terrain_slope = torch.stack([slope_x, slope_y], dim=1) 
         # ============================================
 
-        # C. Inovace (Residual)
+        # C. Innovation (Residual)
         innovation = y_t_raw - y_pred_raw
 
-        # D. Rozdíl měření (pro vstup do sítě F1)
+        # D. Measurement difference (for network input F1)
         obs_diff = y_t_raw - self.y_prev
         
         # F3: Difference of posterior estimates
         fw_evol_diff = self.x_filtered_prev - self.x_filtered_prev_prev
 
-        # F4: Rozdíl (update)
+        # F4: Difference (update)
         fw_update_diff = self.x_filtered_prev - self.x_pred_prev
 
-        # Normalizace
+        # Normalization
         if self.use_log_modulus:
             norm_obs_diff = self.log_modulus(obs_diff)
             norm_innovation = self.log_modulus(innovation)
@@ -125,11 +125,11 @@ class StateKalmanNetTAN(nn.Module):
             if self.use_terrain_grad:
                 norm_terrain_slope = func.normalize(terrain_slope, p=2, dim=1, eps=1e-12)
         
-        # Bezpečnostní checky 
+        # Safety checks 
         if not torch.all(torch.isfinite(self.h_prev)):
             self._log_and_raise("self.h_prev (GRU input)", locals())
         
-        # Výpočet Kalman Gainu sítí s ohledem na zvolené funkce
+        # Kalman Gain computation by network considering selected functions
         if self.use_terrain_grad:
             K_vec, h_new = self.dnn(
                 norm_fw_evol_diff,   # F3
@@ -150,7 +150,7 @@ class StateKalmanNetTAN(nn.Module):
         
         K = K_vec.reshape(batch_size, self.state_dim, self.obs_dim)
         
-        # Korekce stavu
+        # State correction
         correction = (K @ innovation.unsqueeze(-1)).squeeze(-1)
         x_filtered_raw = x_pred_raw + correction
          
@@ -185,7 +185,7 @@ class StateKalmanNetTAN(nn.Module):
                         print("Failed at Uncertainty Analysis of KalmanNet V1")
             P_filtered = torch.stack(P_filtered_list)
 
-        # Update historie
+        # Update history
         self.x_filtered_prev_prev = self.x_filtered_prev.clone() 
         self.x_pred_prev = x_pred_raw.clone()         
         self.x_filtered_prev = x_filtered_raw.clone()      
@@ -281,7 +281,7 @@ class StateKalmanNetTAN(nn.Module):
                         sliced_value = value[0:display_size]
                         display_str = f"{sliced_value}"
                         if batch_size > display_size:
-                            display_str += f"\n... (zobrazeno prvních {display_size} z {batch_size} prvků)"
+                            display_str += f"\n... (showing first {display_size} of {batch_size} items)"
                     else:
                         display_str = str(value)
                     print(f"Value: {display_str}")
@@ -294,6 +294,3 @@ class StateKalmanNetTAN(nn.Module):
             
         print(f"{'='*100}")
         raise RuntimeError(f"Failure: Tensor '{failed_tensor_name}' is NaN or Inf! (See log above)")
-    
-    def log_modulus(self, x):
-        return torch.sign(x) * torch.log(torch.abs(x) + 1.0)

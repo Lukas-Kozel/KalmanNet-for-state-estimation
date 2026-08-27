@@ -5,90 +5,90 @@ import copy
 
 class ParticleFilterSIR:
     """
-    Implementace SIR (Sequential Importance Resampling) Particle Filtru.
-    Tato třída se co nejvěrněji drží logiky a struktury z tutoriálu
+    Implementation of SIR (Sequential Importance Resampling) Particle Filter.
+    This class follows as closely as possible the logic and structure from the tutorial
     "Particle Filters: A Hands-On Tutorial" (Elfring et al.).
     
-    Cílem je přesně replikovat algoritmus popsaný v článku, zejména
-    Algorithm 2: "Particle filter with resampling" (strana 14).
+    The goal is to exactly replicate the algorithm described in the paper, especially
+    Algorithm 2: "Particle filter with resampling" (page 14).
     """
     
     def __init__(self, system_model, num_particles=1000):
         """
-        Inicializace SIR filtru.
-        Zde nastavíme všechny potřebné parametry, které filtr bude používat.
+        Initialization of SIR filter.
+        Here we set all necessary parameters that the filter will use.
         """
         self.device = system_model.Q.device
         
-        # Obecné funkce modelu, které budeme volat.
-        # V článku jsou tyto funkce označeny jako f_k a h_k v rovnicích (1) a (2) (strana 4).
-        self.f = system_model.f  # Process model (model pohybu)
-        self.h = system_model.h  # Measurement model (model měření)
+        # General model functions that we will call.
+        # In the paper these functions are denoted as f_k and h_k in equations (1) and (2) (page 4).
+        self.f = system_model.f  # Process model (motion model)
+        self.h = system_model.h  # Measurement model
         
-        # Parametry filtru
-        self.N = num_particles         # Počet částic, v článku označován jako N_s
+        # Filter parameters
+        self.N = num_particles         # Number of particles, denoted as N_s in the paper
         self.state_dim = system_model.Q.shape[0]
         
-        # Uložíme si počáteční podmínky (prior) a matice šumů z modelu.
-        # Tyto hodnoty budeme používat pro inicializaci a v průběhu filtrace.
+        # Store initial conditions (prior) and noise matrices from the model.
+        # These values will be used for initialization and during filtering.
         self.Ex0_np = system_model.Ex0.cpu().numpy().flatten()
         self.P0_np = system_model.P0.cpu().numpy()
-        self.Q_np_default = system_model.Q.cpu().numpy() # Kovariance procesního šumu 'v' z rovnice (1)
-        self.R_np_default = system_model.R.cpu().numpy() # Kovariance měřicího šumu 'n' z rovnice (2)
+        self.Q_np_default = system_model.Q.cpu().numpy() # Covariance of process noise 'v' from equation (1)
+        self.R_np_default = system_model.R.cpu().numpy() # Covariance of measurement noise 'n' from equation (2)
         
-        # Interní stav filtru, který se bude měnit v každém kroku.
-        # Odpovídá množině {x_k^i, w_k^i} z pseudokódu v článku.
-        self.particles = None  # NumPy pole (N, state_dim), stavy všech částic x_k^i
-        self.weights = None    # NumPy pole (N,), váhy všech částic w_k^i
+        # Internal filter state that will change at each step.
+        # Corresponds to the set {x_k^i, w_k^i} from the pseudocode in the paper.
+        self.particles = None  # NumPy array (N, state_dim), states of all particles x_k^i
+        self.weights = None    # NumPy array (N,), weights of all particles w_k^i
 
     def _propagate_particle(self, particle, Q_np):
         """
-        Propaguje JEDNU částici. Toto je implementace kroku "draw sample" z Algorithm 2 (str. 14).
-        Generuje novou částici x_k^i ze staré x_{k-1}^i pomocí process modelu.
+        Propagates ONE particle. This is implementation of the "draw sample" step from Algorithm 2 (p. 14).
+        Generates new particle x_k^i from old x_{k-1}^i using process model.
         x_k^i ~ p(x_k | x_{k-1}^i)
         
-        V článku je tento krok popsán v Example 3, rovnice (15) (str. 9):
+        In the paper this step is described in Example 3, equation (15) (p. 9):
         x_k^i ~ N(f(x_{k-1}^i), Q)
         """
-        # Převedeme jednu částici na Torch tenzor, abychom mohli použít modelovou funkci f
+        # Convert one particle to Torch tensor to use model function f
         particle_torch = torch.from_numpy(particle).float().to(self.device).reshape(1, -1)
         
-        # Aplikujeme deterministickou část modelu pohybu: f(x_{k-1}^i)
+        # Apply deterministic part of motion model: f(x_{k-1}^i)
         predicted_particle_torch = self.f(particle_torch)
         predicted_particle = predicted_particle_torch.cpu().numpy().flatten()
         
-        # Přidáme stochastickou část: náhodný vzorek procesního šumu w_k
-        noise = np.random.multivariate_normal(np.zeros(self.state_dim), Q_np) # zde je multivariate, protože chci jen vzorek
+        # Add stochastic part: random sample of process noise w_k
+        noise = np.random.multivariate_normal(np.zeros(self.state_dim), Q_np) # here is multivariate because I want only a sample
         
-        # Výsledkem je nová pozice částice v čase k
-        return predicted_particle + noise # x_k^i ~ N(x_{k-1}^i + B_k*u_k, Q) z rovnice (15)
+        # Result is new particle position at time k
+        return predicted_particle + noise # x_k^i ~ N(x_{k-1}^i + B_k*u_k, Q) from equation (15)
 
     def _compute_likelihood(self, particle, z_np, R_np):
         """
-        Vypočítá pravděpodobnost (likelihood) p(z_k|x_k^i) pro JEDNU částici.
-        Tato hodnota říká, jak moc je stav částice 'particle' v souladu se skutečným měřením 'z_np'.
-        Je to klíčová komponenta pro aktualizaci vah (rovnice 16 a 17, str. 9).
+        Computes probability (likelihood) p(z_k|x_k^i) for ONE particle.
+        This value indicates how much the particle state 'particle' agrees with actual measurement 'z_np'.
+        It is a key component for weight update (equations 16 and 17, p. 9).
         """
-        # Převedeme částici na Torch tenzor pro použití modelové funkce h
+        # Convert particle to Torch tensor for use of model function h
         particle_torch = torch.from_numpy(particle).float().to(self.device).reshape(1, -1)
         
-        # Spočítáme očekávané měření pro danou částici: h(x_k^i)
+        # Compute expected measurement for given particle: h(x_k^i)
         expected_measurement_torch = self.h(particle_torch)
         expected_measurement = expected_measurement_torch.cpu().numpy().flatten()
         
-        # Vypočítáme hodnotu PDF Gaussovy distribuce měřicího šumu.
-        # Ptáme se: "Jaká je pravděpodobnost, že bychom naměřili 'z_np', pokud by
-        # skutečný stav byl 'particle' a náš senzor měl šum s kovariancí R?"
-        likelihood = multivariate_normal.pdf(z_np, mean=expected_measurement, cov=R_np) # zde je pdf protože chci konkrétní realizaci v daném bodě
+        # Compute PDF value of Gaussian distribution of measurement noise.
+        # We ask: "What is the probability that we would measure 'z_np' if the
+        # true state were 'particle' and our sensor had noise with covariance R?"
+        likelihood = multivariate_normal.pdf(z_np, mean=expected_measurement, cov=R_np) # here is pdf because I want specific realization at given point
         return likelihood
 
     def _normalize_weights(self, weights):
-        """Normalizuje váhy tak, aby jejich součet byl 1. Ekvivalent 'normalize_weights' z reference."""
+        """Normalizes weights so their sum is 1. Equivalent to 'normalize_weights' from reference."""
         sum_weights = np.sum(weights)
         if sum_weights < 1e-15:
-            # Ochrana proti numerickému kolapsu, kdy jsou všechny váhy prakticky nulové.
-            # V takovém případě resetujeme váhy na uniformní rozdělení.
-            print("Varování: Součet vah je téměř nulový. Resetuji na uniformní rozdělení.")
+            # Protection against numerical collapse when all weights are practically zero.
+            # In such case reset weights to uniform distribution.
+            print("Warning: Sum of weights is almost zero. Resetting to uniform distribution.")
             weights.fill(1.0 / self.N)
         else:
             weights /= sum_weights
@@ -96,34 +96,34 @@ class ParticleFilterSIR:
 
     def _systematic_resample(self, particles, weights):
         """
-        Implementace Systematic Resampling. Tento algoritmus bojuje proti degeneraci
-        (Challenge I, sekce 4.2.1) tím, že vytváří novou populaci částic, kde částice
-        s vysokou vahou jsou naklonovány a ty s nízkou jsou odstraněny.
-        Logika je přesnou replikou referenčního kódu.
+        Implementation of Systematic Resampling. This algorithm fights against degeneracy
+        (Challenge I, section 4.2.1) by creating a new particle population where particles
+        with high weight are cloned and those with low weight are removed.
+        Logic is exact replica of reference code.
         """
         N = len(particles)
         
-        # Vytvoříme kumulativní součet vah (CDF). Představte si to jako "koláč",
-        # kde velikost dílku pro každou částici odpovídá její váze.
+        # Create cumulative sum of weights (CDF). Imagine it as a "pie"
+        # where size of slice for each particle corresponds to its weight.
         Q = np.cumsum(weights)
 
-        # Vygenerujeme pouze JEDEN náhodný startovací bod v prvním segmentu [1e-10, 1/N).
+        # Generate only ONE random starting point in first segment [1e-10, 1/N).
         u0 = np.random.uniform(1e-10, 1.0 / N)
         
         new_particles = np.empty_like(particles)
-        n = 0  # Index pro nové (resamplované) částice
-        m = 0  # Index pro staré částice (pro procházení CDF)
+        n = 0  # Index for new (resampled) particles
+        m = 0  # Index for old particles (for traversing CDF)
         
         while n < N:
-            # Vypočítáme pozici "ukazatele" pro aktuální novou částici.
-            # Všechny ukazatele jsou od sebe vzdáleny přesně 1/N.
+            # Compute position of "pointer" for current new particle.
+            # All pointers are exactly 1/N apart.
             u = u0 + float(n)/ N
             
-            # Najdeme první částici v CDF, jejíž "dílek koláče" zasahuje za náš ukazatel.
+            # Find first particle in CDF whose "pie slice" extends beyond our pointer.
             while u > Q[m]:
                 m += 1
             
-            # Zkopírujeme tuto vybranou částici do nové sady.
+            # Copy this selected particle into new set.
             new_particles[n] = particles[m]
             
             n += 1
@@ -132,16 +132,16 @@ class ParticleFilterSIR:
 
     def get_estimate(self, particles, weights):
         """
-        Vypočítá finální odhad stavu jako vážený průměr všech částic.
-        Článek zmiňuje, že mrak částic reprezentuje posterior (rovnice 14),
-        a toto je způsob, jak z něj získat jeden bodový odhad.
+        Computes final state estimate as weighted average of all particles.
+        Paper mentions that particle cloud represents posterior (equation 14),
+        and this is way to obtain one point estimate from it.
         """
-        mean = np.average(particles, weights=weights, axis=0) # vážený průměr přes particles a váhy
-        # Vážená kovariance pro odhad nejistoty (potřebné pro ANEES)
+        mean = np.average(particles, weights=weights, axis=0) # weighted average over particles and weights
+        # Weighted covariance for uncertainty estimate (needed for ANEES)
         diff = particles - mean
         cov = (diff * weights[:, np.newaxis]).T @ diff
         
-        # Převedení na Torch tenzory
+        # Convert to Torch tensors
         mean_torch = torch.from_numpy(mean).float().to(self.device)
         cov_torch = torch.from_numpy(cov).float().to(self.device)
         return mean_torch.reshape(self.state_dim, 1), cov_torch
@@ -163,8 +163,8 @@ class ParticleFilterSIR:
         current_particles = np.random.multivariate_normal(Ex0_np, P0_np, size=self.N)
         current_weights = np.full(self.N, 1.0 / self.N)
         
-        # Pojistka
-        assert current_particles.shape == (self.N, self.state_dim), "Chyba inicializace!"
+        # Safety check
+        assert current_particles.shape == (self.N, self.state_dim), "Initialization error!"
         
         x_est, P_est = self.get_estimate(current_particles, current_weights)
         x_filtered_history[0] = x_est.squeeze()
@@ -182,28 +182,26 @@ class ParticleFilterSIR:
                 likelihood = self._compute_likelihood(temp_propagated_particles[i], y_seq_np[k], R_np)
                 temp_new_weights[i] = current_weights[i] * likelihood
             
-            # Vážené částice PŘED resampligem
+            # Weighted particles BEFORE resampling
             propagated_particles = temp_propagated_particles
             propagated_weights = self._normalize_weights(temp_new_weights)
             
-            # debug
-            assert propagated_particles.shape == (self.N, self.state_dim), f"Chyba po propagaci v kroku {k}!"
+            assert propagated_particles.shape == (self.N, self.state_dim), f"Error after propagation in step {k}!"
 
             effective_N = 1. / np.sum(propagated_weights**2)
             if effective_N < n_threshold:
-                # 2. Provedeme resampling
+                # 2. Perform resampling
                 resampled_particles = self._systematic_resample(propagated_particles, propagated_weights)
                 
-                # Finální částice pro tento krok
+                # Final particles for this step
                 current_particles = resampled_particles
                 current_weights = np.full(self.N, 1.0 / self.N)
             else:
-                # Pokud neresamplujeme, přeneseme vážené částice do dalšího kroku
+                # If we do not resample, transfer weighted particles to next step
                 current_particles = propagated_particles
                 current_weights = propagated_weights
                 
-            # debug
-            assert current_particles.shape == (self.N, self.state_dim), f"Chyba na konci kroku {k}!"
+            assert current_particles.shape == (self.N, self.state_dim), f"Error at end of step {k}!"
 
             particles_history.append(current_particles.copy()) 
             

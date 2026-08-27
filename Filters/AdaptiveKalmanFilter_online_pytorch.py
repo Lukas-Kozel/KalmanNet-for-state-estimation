@@ -1,6 +1,6 @@
 import torch
 import numpy as np
-# Předpokládám, že MDM_functions jsou dostupné, jak je v zadání
+# Assume MDM_functions are available as in the assignment
 # from MDM.MDM_functions import MDM_nullO_LTI, pinv, Ksi_fun, baseMatrix_fun, Upsilon_2_fun, kron2_vec, kron2_mat
 from MDM.MDM_functions import MDM_nullO_LTI, pinv, Ksi_fun, baseMatrix_fun, Upsilon_2_fun, kron2_vec, kron2_mat
 
@@ -8,8 +8,8 @@ from tqdm import tqdm
 
 class KalmanFilter:
     """
-    Kalmanův filtr pro t-invaritantní systém s lineární dynamikou.
-    (Původní implementace beze změn)
+    Kalman filter for time-invariant system with linear dynamics.
+    (Original implementation unchanged)
     """
     def __init__(self,model):
         self.device = model.Q.device
@@ -23,7 +23,7 @@ class KalmanFilter:
         self.state_dim = self.F.shape[0]
         self.obs_dim = self.H.shape[0]
 
-        # Interní stav pro online použití
+        # Internal state for online use
         self.x_predict_current = None
         self.P_predict_current = None
         self.reset(model.Ex0, model.P0)
@@ -100,7 +100,7 @@ class AdaptiveKalmanFilter_online_pytorch:
         self.mdm_version = mdm_version
         self.lambda_rls = lambda_rls
         self.q_init_val = q_init                  
-        self.init_sigma_val = init_sigma_rls_value 
+        self.init_sigma_rls_value = init_sigma_rls_value 
         self.alpha_nom_val = alpha_nom
         
         self.nw = self.kf.F.shape[0] 
@@ -134,16 +134,16 @@ class AdaptiveKalmanFilter_online_pytorch:
         r1_init = R0[0,0]
         r2_init = R0[1,1]
         
-        # 1. Ponecháno jako čisté 1D pole (3,)
+        # 1. Kept as pure 1D array (3,)
         self.alpha_est = np.array([self.q_init, r1_init, r2_init], dtype=np.float64)
         
-        # 2. Ponecháno jako čisté 1D pole (3,)
+        # 2. Kept as pure 1D array (3,)
         if self.alpha_nom_val is not None:
             self.alpha_nom = np.array(self.alpha_nom_val, dtype=np.float64)
         else:
             self.alpha_nom = np.copy(self.alpha_est)
             
-        # 3. Proporcionální Sigma
+        # 3. Proportional Sigma
         sigma_q  = (self.alpha_nom[0] * self.init_sigma_val)**2 + 1e-12
         sigma_r1 = (self.alpha_nom[1] * self.init_sigma_val)**2 + 1e-12
         sigma_r2 = (self.alpha_nom[2] * self.init_sigma_val)**2 + 1e-12
@@ -198,7 +198,7 @@ class AdaptiveKalmanFilter_online_pytorch:
                 nr = r_k.shape[0]
                 Ksi = Ksi_fun(nr) 
                 
-                # y_rls je ploché 1D pole tvaru (N,)
+                # y_rls is flat 1D array shape (N,)
                 y_rls = Ksi @ kron2_vec(r_k) 
                 
                 Upsilon = self._get_upsilon()
@@ -213,18 +213,18 @@ class AdaptiveKalmanFilter_online_pytorch:
                 H_rls = np.hstack([h_q_new, H_R_new])
                 
                 # =========================================================
-                # NUMERICKY STABILNÍ WRLS
+                # NUMERICALLY STABLE WRLS
                 # =========================================================
-                # 1. Očekávaná hodnota y_expected_nom bude ploché pole tvaru (N,)
+                # 1. Expected value y_expected_nom will be flat array shape (N,)
                 y_expected_nom = np.abs(H_rls @ self.alpha_nom)
                 
-                # 2. Váhy budou ploché pole tvaru (N,)
+                # 2. Weights will be flat array shape (N,)
                 weights = y_expected_nom + 1e-8
                 
-                # 3. Bezpečné dělení bez zničujícího broadcastingu
-                # (N,) děleno (N,) -> vrací (N,) !
+                # 3. Safe division without destructive broadcasting
+                # (N,) divided by (N,) -> returns (N,) !
                 y_rls_norm = y_rls / weights
-                # H_rls je (N, 3), weights musí být roztaženo na sloupec jen pro toto dělení
+                # H_rls is (N, 3), weights must be expanded to column only for this division
                 H_rls_norm = H_rls / weights[:, np.newaxis] 
                 
                 dim_obs_rls = H_rls_norm.shape[0]
@@ -232,10 +232,10 @@ class AdaptiveKalmanFilter_online_pytorch:
 
                 S = H_rls_norm @ self.Sigma_RLS @ H_rls_norm.T + Omega_norm
                 
-                # Zde je pinv naprosto v pořádku, protože S je po normalizaci blízko Identitě
+                # Here pinv is absolutely fine because S is close to Identity after normalization
                 K_gain = self.Sigma_RLS @ H_rls_norm.T @ np.linalg.pinv(S)
                 
-                # Vektor chyb (N,) a čistý update stavu (3,)
+                # Error vector (N,) and clean state update (3,)
                 error = y_rls_norm - H_rls_norm @ self.alpha_est
                 self.alpha_est = self.alpha_est + K_gain @ error
                 
@@ -243,8 +243,8 @@ class AdaptiveKalmanFilter_online_pytorch:
                 self.Sigma_RLS = (I_p - K_gain @ H_rls_norm) @ self.Sigma_RLS / self.lambda_rls
                 # =========================================================
 
-                # --- REKONSTRUKCE MATIC ---
-                # Extrakce ze správného 1D pole
+                # --- MATRIX RECONSTRUCTION ---
+                # Extraction from correct 1D array
                 q_est = self.alpha_est[0]
                 q_safe = max(q_est, 1e-8)
                 Q_new = q_safe * self.Q_template
@@ -258,7 +258,7 @@ class AdaptiveKalmanFilter_online_pytorch:
                 
             except Exception as e:
                 import traceback
-                print("CHYBA V RLS:")
+                print("ERROR IN RLS:")
                 traceback.print_exc()
 
         x_filt, P_filt = self.kf.step(y_t)

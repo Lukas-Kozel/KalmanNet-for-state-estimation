@@ -5,13 +5,13 @@ import torch.nn.functional as F
 class DNN_KalmanNetTAN(nn.Module):
      def __init__(self, system_model, hidden_size_multiplier=10,
                   output_layer_multiplier=4, num_gru_layers=1, gru_hidden_dim_multiplier=1,
-                  use_terrain_grad=True): # <--- NEW FLAG
+                  use_terrain_grad=True):
          super(DNN_KalmanNetTAN, self).__init__()
 
          self.state_dim = system_model.state_dim
          self.obs_dim = system_model.obs_dim
          self.device = system_model.device
-         self.use_terrain_grad = use_terrain_grad # <--- STORE FLAG
+         self.use_terrain_grad = use_terrain_grad
 
          m = self.state_dim
          n = self.obs_dim
@@ -58,7 +58,6 @@ class DNN_KalmanNetTAN(nn.Module):
          ).to(self.device)
 
 
-     # CHANGED: Using *args to handle flexible input lengths conditionally
      def forward(self, state_inno, inovation, diff_state, diff_obs, *args):
          """
          Performs the forward pass of the network.

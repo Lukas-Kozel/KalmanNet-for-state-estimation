@@ -121,7 +121,7 @@ class AdaptiveKalmanFilter_default:
         # RLS covariance matrix (since we have no alpha_nom, use pure identity scaled by constant)
         self.Sigma_RLS = np.eye(self.n_params) * self.init_sigma_val
         
-        # Buffery
+        # Buffer
         self.z_buffer = []
         self.u_buffer = []
         self.Upsilon_2 = None

@@ -5,7 +5,7 @@ from MDM.MDM_functions import MDM_nullO_LTI, Ksi_fun, baseMatrix_fun, Upsilon_2_
 
 class KalmanFilter:
     """
-    Kalmanův filtr (beze změn, ponecháno pro kompatibilitu).
+    Kalman filter (unchanged, kept for compatibility).
     """
     def __init__(self, model):
         self.device = model.Q.device
@@ -37,9 +37,9 @@ class KalmanFilter:
         # Kalman Gain
         S = self.H @ P_predict @ self.H.T + self.R
         K = P_predict @ self.H.T @ torch.linalg.inv(S)
-        
+
         x_filtered = x_predict + K @ innovation
-        # Joseph form update (numericky stabilnější)
+        # Joseph form update (numerically more stable)
         I = torch.eye(self.state_dim, device=self.device)
         ImKH = I - K @ self.H
         P_filtered = ImKH @ P_predict @ ImKH.T + K @ self.R @ K.T
@@ -53,8 +53,8 @@ class KalmanFilter:
 class FastAdaptiveKalmanFilter:
     def __init__(self, model, mdm_L=10, mdm_version=1, forgetting_factor=0.98):
         """
-        Optimalizovaný Adaptivní KF.
-        Předpočítává konstantní matice MDM algoritmu pro LTI systémy.
+        Optimized Adaptive KF.
+        Precomputes constant matrices of MDM algorithm for LTI systems.
         """
         self.kf = KalmanFilter(model)
         self.device = model.Q.device
@@ -62,26 +62,26 @@ class FastAdaptiveKalmanFilter:
         self.mdm_version = mdm_version
         self.lambda_rls = forgetting_factor
         
-        # Dimenze
+        # Dimensions
         self.nw = self.kf.F.shape[0]
         self.nv = self.kf.H.shape[0]
         self.n_params = (self.nw * (self.nw + 1)) // 2 + (self.nv * (self.nv + 1)) // 2
-        
-        # --- OPTIMALIZACE: PŘEDPOČÍTÁNÍ MATIC ---
-        # Pro LTI systém jsou matice Awv a Upsilon konstantní.
-        # Nemusíme je počítat v každém kroku.
+
+        # --- OPTIMIZATION: PRECOMPUTATION OF MATRICES ---
+        # For LTI system, matrices Awv and Upsilon are constant.
+        # We don't need to compute them at each step.
         self._precompute_mdm_constants()
-        
-        # Inicializace RLS (startujeme na hodnotách z modelu)
+
+        # RLS initialization (start with model values)
         self.alpha_est = self._init_alpha_from_model(model)
         self.Sigma_RLS = np.eye(self.n_params) * 100.0
 
-        # Buffery
+        # Buffers
         self.z_buffer = []
         self.u_buffer = []
 
     def _init_alpha_from_model(self, model):
-        """Vytáhne počáteční parametry Q a R z modelu do vektoru alpha."""
+        """Extract initial Q and R parameters from model into alpha vector."""
         Q0 = model.Q.cpu().numpy()
         R0 = model.R.cpu().numpy()
         i_q, j_q = np.triu_indices(self.nw)
@@ -92,47 +92,47 @@ class FastAdaptiveKalmanFilter:
 
     def _precompute_mdm_constants(self):
         """
-        Spočítá konstantní regresní matici H_rls_base.
-        Tím ušetříme SVD rozklad a Kroneckerovy součiny v každém kroku.
+        Compute constant regression matrix H_rls_base.
+        This saves SVD decomposition and Kronecker products at each step.
         """
-        print("Optimalizace: Předpočítávám MDM matice...")
-        
-        # Dummy data pro získání strukturálních matic
+        print("Optimization: Precomputing MDM matrices...")
+
+        # Dummy data for obtaining structural matrices
         dummy_z = np.zeros((self.mdm_L, self.nv))
-        dummy_u = np.zeros((self.mdm_L, 1)) # Předpoklad u_dim=1
-        
+        dummy_u = np.zeros((self.mdm_L, 1)) # Assumption u_dim=1
+
         F_np = self.kf.F.cpu().numpy()
         H_np = self.kf.H.cpu().numpy()
-        G_np = np.zeros((self.nw, dummy_u.shape[1])) 
+        G_np = np.zeros((self.nw, dummy_u.shape[1]))
         E_np = np.eye(self.nw)
         D_np = np.eye(self.nv)
         nz_np = np.array([self.nv])
-        
-        # 1. Získáme Awv (regresor modelu)
-        # Voláme MDM jednou naprázdno
+
+        # 1. Obtain Awv (model regressor)
+        # Call MDM once empty
         r_list, Awv_matrix = MDM_nullO_LTI(
             self.mdm_L, F_np, G_np, E_np, nz_np, H_np, D_np, 
             dummy_z, dummy_u, self.mdm_version
         )
         
-        # 2. Získáme Upsilon (vazební matice momentů)
-        w2b = [baseMatrix_fun(self.nw, 1)] 
-        v2b = [baseMatrix_fun(self.nv, 1)] 
+        # 2. Obtain Upsilon (moment binding matrix)
+        w2b = [baseMatrix_fun(self.nw, 1)]
+        v2b = [baseMatrix_fun(self.nv, 1)]
         Upsilon = Upsilon_2_fun(w2b, v2b, self.mdm_L)
-        
-        # 3. Předpočítáme finální regresní matici pro RLS
+
+        # 3. Precompute final regression matrix for RLS
         # H_rls = Ksi * (Awv (x) Awv) * Upsilon
-        # Tato matice je pro LTI systém KONSTANTNÍ!
+        # This matrix is CONSTANT for LTI system!
         nr = r_list[0].shape[0]
         Ksi = Ksi_fun(nr)
-        
-        # Uložíme si hotovou matici. V cyklu ji už jen použijeme.
+
+        # Store ready matrix. In loop we just use it.
         self.H_rls_cached = Ksi @ kron2_mat(Awv_matrix) @ Upsilon
-        
-        print("Hotovo.")
+
+        print("Done.")
 
     def _reconstruct_qr(self, alpha):
-        """Rychlá rekonstrukce Q a R."""
+        """Fast Q and R reconstruction."""
         q_len = (self.nw * (self.nw + 1)) // 2
         alpha_q = alpha[:q_len]
         alpha_r = alpha[q_len:]
@@ -147,7 +147,7 @@ class FastAdaptiveKalmanFilter:
         return Q_est, R_est
 
     def _project_to_psd(self, M, min_val=1e-6):
-        """Rychlá projekce na PSD."""
+        """Fast projection to PSD."""
         M = (M + M.T) * 0.5
         eigvals, eigvecs = np.linalg.eigh(M)
         if np.any(eigvals < min_val):
@@ -156,10 +156,10 @@ class FastAdaptiveKalmanFilter:
         return M
 
     def step_adaptive(self, y_t, u_t=None):
-        # 1. Update Bufferu (Standardní Python list operace jsou rychlé)
+        # 1. Update Buffer (Standard Python list operations are fast)
         y_np = y_t.cpu().numpy().squeeze()
         if y_np.ndim == 0: y_np = np.expand_dims(y_np, axis=0)
-        
+
         if u_t is not None:
             u_np = u_t.cpu().numpy().squeeze()
             if u_np.ndim == 0: u_np = np.expand_dims(u_np, axis=0)
@@ -167,98 +167,96 @@ class FastAdaptiveKalmanFilter:
 
         self.z_buffer.append(y_np)
         self.u_buffer.append(u_np)
-        
+
         if len(self.z_buffer) > self.mdm_L:
             self.z_buffer.pop(0); self.u_buffer.pop(0)
 
-        # 2. Adaptace (Jen pokud je buffer plný)
+        # 2. Adaptation (Only if buffer is full)
         if len(self.z_buffer) == self.mdm_L:
             try:
-                # Zde musíme volat MDM jen pro výpočet rezidua 'r'.
-                # Awv už máme zapracované v H_rls_cached.
-                # Optimalizace: Volat MDM funkci je stále trochu drahé kvůli SVD uvnitř.
-                # Ale bez přepsání MDM_functions to lépe nejde.
-                # Ušetříme ale masivně na výpočtu H_rls.
-                
+                # Here we must call MDM only for residual 'r' computation.
+                # Awv is already incorporated in H_rls_cached.
+                # Optimization: Calling MDM function is still somewhat expensive due to SVD inside.
+                # But without rewriting MDM_functions it can't be better.
+                # We massively save on H_rls computation though.
+
                 z_window = np.array(self.z_buffer)
                 u_window = np.array(self.u_buffer)
-                
-                # Parametry (jen pro volání funkce)
+
+                # Parameters (just for function call)
                 F_np = self.kf.F.cpu().numpy(); H_np = self.kf.H.cpu().numpy()
                 G_np = np.zeros((self.nw, u_window.shape[1])); E_np = np.eye(self.nw)
                 D_np = np.eye(self.nv); nz_np = np.array([self.nv])
 
-                # Získání rezidua r_k (Data dependent part)
+                # Obtain residual r_k (Data dependent part)
                 r_list, _ = MDM_nullO_LTI(self.mdm_L, F_np, G_np, E_np, nz_np, H_np, D_np, z_window, u_window, self.mdm_version)
                 r_k = r_list[0]
-                
-                # RLS UPDATE (OPTIMALIZOVANÝ)
+
+                # RLS UPDATE (OPTIMIZED)
                 nr = r_k.shape[0]
                 Ksi = Ksi_fun(nr)
-                y_rls = Ksi @ kron2_vec(r_k) # Pozorování
-                
-                H_rls = self.H_rls_cached # Použijeme předpočítanou matici!
-                
-                # RLS rovnice (Stable Inverse Update)
+                y_rls = Ksi @ kron2_vec(r_k) # Observation
+
+                H_rls = self.H_rls_cached # Use precomputed matrix!
+
+                # RLS equation (Stable Inverse Update)
                 # K = P * H.T * inv(H * P * H.T + lambda * I)
                 S = H_rls @ self.Sigma_RLS @ H_rls.T + self.lambda_rls * np.eye(H_rls.shape[0])
                 K_gain = self.Sigma_RLS @ H_rls.T @ np.linalg.pinv(S)
-                
+
                 error = y_rls - H_rls @ self.alpha_est
                 self.alpha_est = self.alpha_est + K_gain @ error
-                
+
                 # Update P
                 I_p = np.eye(self.n_params)
                 self.Sigma_RLS = (1.0 / self.lambda_rls) * (I_p - K_gain @ H_rls) @ self.Sigma_RLS
                 
-                # Rekonstrukce a vložení
+                # Reconstruction and insertion
                 Q_new, R_new = self._reconstruct_qr(self.alpha_est)
                 Q_new = self._project_to_psd(Q_new, 1e-6)
                 R_new = self._project_to_psd(R_new, 1e-3)
-                
+
                 self.kf.Q = torch.from_numpy(Q_new).float().to(self.device)
                 self.kf.R = torch.from_numpy(R_new).float().to(self.device)
 
             except Exception:
                 pass # Numerical instability fallback
 
-        # 3. Filtrace
+        # 3. Filtering
         x, P = self.kf.step(y_t)
         return x, P, self.kf.Q, self.kf.R
 
     def process_sequence_adaptively(self, y_seq, u_seq=None, Ex0=None, P0=None):
         """
-        Simuluje online běh.
-        OPRAVENO: Správné uložení počátečního stavu do historie.
+        Simulates online run.
         """
         seq_len = y_seq.shape[0]
-        
-        # 1. Kompletní reset RLS estimátoru
+
+        # 1. Complete reset of RLS estimator
         self.__init__(self.kf.model, self.mdm_L, self.mdm_version)
 
-        # 2. Určení počátečních podmínek
+        # 2. Determine initial conditions
         if Ex0 is None: Ex0 = self.kf.model.Ex0
         if P0 is None: P0 = self.kf.model.P0
 
-        # 3. Reset Kalmanova filtru
+        # 3. Reset Kalman filter
         self.kf.reset(Ex0, P0)
-        
+
         self.z_buffer = []
         self.u_buffer = []
 
-        # Inicializace historie
+        # History initialization
         x_hist = torch.zeros(seq_len, self.kf.state_dim, device=self.device)
         P_hist = torch.zeros(seq_len, self.kf.state_dim, self.kf.state_dim, device=self.device)
         Q_hist = []
         R_hist = []
 
-        # --- OPRAVA: Uložení počátečního stavu do t=0 ---
-        # Protože smyčka začíná od k=1 (čekáme na měření), musíme t=0 vyplnit ručně.
-        # Uložíme tam apriori odhad (Ex0).
+        # Because loop starts from k=1 (waiting for measurement), we must fill t=0 manually.
+        # Store a priori estimate (Ex0) there.
         x_hist[0] = Ex0.squeeze()
         P_hist[0] = P0
 
-        # Smyčka běží od 1, protože KF update potřebuje nové měření y_t
+        # Loop runs from 1, because KF update needs new measurement y_t
         for k in tqdm(range(1, seq_len), desc="Processing sequence adaptively"):
             y_t = y_seq[k]
             u_t = u_seq[k] if u_seq is not None else None

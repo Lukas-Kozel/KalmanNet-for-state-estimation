@@ -9,7 +9,7 @@ class ExtendedKalmanFilter:
         self.f = system_model.f
         self.h = system_model.h
 
-        # Pokud je systém lineární, Jakobiány jsou konstantní matice F a H
+        # If the system is linear, Jacobians are constant matrices F and H
         self.is_linear_f = getattr(system_model, 'is_linear_f', False)
         self.is_linear_h = getattr(system_model, 'is_linear_h', False)
         if self.is_linear_f:
@@ -27,7 +27,7 @@ class ExtendedKalmanFilter:
         self.x_filtered_prev = None
         self.P_filtered_prev = None
 
-        # Interní stav pro online použití: predikce pro aktuální krok
+        # Internal state for online use: prediction for current step
         self.x_predict_current = None
         self.P_predict_current = None
 
@@ -35,7 +35,7 @@ class ExtendedKalmanFilter:
 
     def reset(self, Ex0, P0):
         """
-        Inicializuje nebo resetuje interní stav filtru pro online použití.
+        Initializes or resets internal filter state for online use.
         """
         self.x_predict_current = Ex0.clone().detach().reshape(self.state_dim, 1)
         self.P_predict_current = P0.clone().detach()
@@ -74,8 +74,8 @@ class ExtendedKalmanFilter:
 
     def step(self, y_t):
         """
-        Provede jeden kompletní krok filtrace pro ONLINE použití.
-        Vrací nejlepší odhad pro aktuální čas 't'.
+        Performs one complete filtering step for ONLINE use.
+        Returns best estimate for current time 't'.
         """
         x_filtered, P_filtered, _, _ = self.update_step(self.x_predict_current, y_t, self.P_predict_current)
 
@@ -88,7 +88,7 @@ class ExtendedKalmanFilter:
 
     def process_sequence(self, y_seq, Ex0=None, P0=None):
             """
-            Zpracuje celou sekvenci měření `y_seq` (offline) a vrátí detailní historii.
+            Processes entire measurement sequence `y_seq` (offline) and returns detailed history.
             """
 
             seq_len = y_seq.shape[0]

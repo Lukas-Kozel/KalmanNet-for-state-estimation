@@ -6,13 +6,13 @@ from tqdm import tqdm
 
 class ParticleFilter:
     """
-    Implementace SIR (Sequential Importance Resampling) Particle Filtru.
-    Tato třída se drží logiky a struktury z tutoriálu, ale pro vysoký výkon
-    používá vektorizované operace místo pomalých `for` cyklů.
+    Implementation of SIR (Sequential Importance Resampling) Particle Filter.
+    This class follows the logic and structure from the tutorial, but for high performance
+    uses vectorized operations instead of slow `for` loops.
     """
     
     def __init__(self, system_model, num_particles=1000):
-        # ... (tato metoda zůstává beze změny)
+        # ... (this method remains unchanged)
         self.device = system_model.Q.device
         self.f = system_model.f
         self.h = system_model.h
@@ -25,10 +25,10 @@ class ParticleFilter:
         self.particles = None
         self.weights = None
         if self.N <= 0:
-            raise ValueError("Počet částic (num_particles) musí být kladné celé číslo.")
+            raise ValueError("Number of particles (num_particles) must be a positive integer.")
 
     def _propagate_vectorized(self, particles, Q_np):
-        """Vektorizovaná predikce pro celý mrak částic."""
+        """Vectorized prediction for the entire particle cloud."""
         particles_torch = torch.from_numpy(particles).float().to(self.device)
         predicted_particles_torch = self.f(particles_torch)
         predicted_particles = predicted_particles_torch.cpu().numpy()
@@ -36,7 +36,7 @@ class ParticleFilter:
         return predicted_particles + noise
 
     def _compute_likelihood_vectorized(self, particles, z_np, R_np):
-        """Vektorizovaný výpočet likelihood pro celý mrak částic."""
+        """Vectorized likelihood computation for the entire particle cloud."""
         particles_torch = torch.from_numpy(particles).float().to(self.device)
         expected_measurements_torch = self.h(particles_torch)
         expected_measurements = expected_measurements_torch.cpu().numpy()
@@ -58,10 +58,10 @@ class ParticleFilter:
         return new_particles
     
     def _normalize_weights(self, weights):
-        """Normalizuje váhy tak, aby jejich součet byl 1. Ekvivalent 'normalize_weights' z reference."""
+        """Normalizes weights so their sum is 1. Equivalent to 'normalize_weights' from reference."""
         sum_weights = np.sum(weights)
         if sum_weights < 1e-15:
-            # print("Varování: Součet vah je téměř nulový. Resetuji na uniformní rozdělení.")
+            # print("Warning: Sum of weights is almost zero. Resetting to uniform distribution.")
             weights.fill(1.0 / self.N)
         else:
             weights /= sum_weights
@@ -91,7 +91,7 @@ class ParticleFilter:
         current_particles = np.random.multivariate_normal(Ex0_np, P0_np, size=self.N)
         current_weights = np.full(self.N, 1.0 / self.N)
         
-        assert current_particles.shape == (self.N, self.state_dim), "Chyba inicializace!"
+        assert current_particles.shape == (self.N, self.state_dim), "Initialization error!"
         
         x_est, P_est = self.get_estimate(current_particles, current_weights)
         x_filtered_history[0] = x_est.squeeze()
@@ -110,14 +110,14 @@ class ParticleFilter:
             current_particles = propagated_particles
             current_weights = self._normalize_weights(new_weights)
             
-            assert current_particles.shape == (self.N, self.state_dim), f"Chyba po propagaci v kroku {k}!"
+            assert current_particles.shape == (self.N, self.state_dim), f"Error after propagation at step {k}!"
 
             effective_N = 1. / np.sum(current_weights**2)
             if effective_N < n_threshold:
                 current_particles = self._systematic_resample(current_particles, current_weights)
                 current_weights.fill(1.0 / self.N)
                 
-            assert current_particles.shape == (self.N, self.state_dim), f"Chyba na konci kroku {k}!"
+            assert current_particles.shape == (self.N, self.state_dim), f"Error at end of step {k}!"
 
             particles_history.append(current_particles.copy()) 
             

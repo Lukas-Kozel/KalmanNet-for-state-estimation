@@ -29,38 +29,38 @@ class StateBayesianKalmanNet(nn.Module):
 
     def reset(self, batch_size=1, initial_state=None):
         if initial_state is not None:
-            # Počáteční stav pro t=0
+            # Initial state for t=0
             self.x_filtered_t_minus_1 = initial_state.detach().clone().to(self.device)
         else:
             self.x_filtered_t_minus_1 = torch.zeros(batch_size, self.state_dim, device=self.device)
         
-        # Pro t=1 budou rozdíly nulové, takže tyto stavy inicializujeme stejně
+        # For t=1 differences will be zero, so these states are initialized the same
         self.x_filtered_t_minus_2 = self.x_filtered_t_minus_1.clone()
         
-        # Predikovaný stav pro t-1 (x_{t-1|t-2})
+        # Predicted state for t-1 (x_{t-1|t-2})
         x_pred_t_minus_1 = self.system_model.f(self.x_filtered_t_minus_2)
         self.x_pred_t_minus_1 = x_pred_t_minus_1.clone().detach()
         
-        # Měření pro t-1 (y_{t-1})
+        # Measurement for t-1 (y_{t-1})
         self.y_t_minus_1 = self.system_model.h(x_pred_t_minus_1).clone().detach()
 
-        # Skrytý stav pro GRU
+        # Hidden state for GRU
         self.h_prev = self.h_init_master.expand(-1, batch_size, -1).clone().to(self.device)
 
         self.Kalman_gain_history = []
 
     def step(self, y_t):
-        # 1. PREDIKCE (pro aktuální čas t)
+        # 1. PREDICTION (for current time t)
         # x_{t|t-1} = f(x_{t-1|t-1})
         x_predicted = self.system_model.f(self.x_filtered_t_minus_1)
         # y_{t|t-1} = h(x_{t|t-1})
         y_predicted = self.system_model.h(x_predicted)
 
-        # Ošetření dimenzí
+        # Dimension handling
         if y_predicted.dim() == 1: y_predicted = y_predicted.unsqueeze(-1)
         if y_t.dim() == 1: y_t = y_t.unsqueeze(-1)
 
-        # 2. VÝPOČET VSTUPŮ PRO DNN
+        # 2. COMPUTATION OF INPUTS FOR DNN
         # x_{t-1|t-1} - x_{t-1|t-2}
         state_inno = self.x_filtered_t_minus_1 - self.x_pred_t_minus_1
         # y_t - y_{t|t-1}
@@ -82,13 +82,13 @@ class StateBayesianKalmanNet(nn.Module):
         K = K_vec.reshape(-1, self.state_dim, self.obs_dim)
         self.Kalman_gain_history.append(K.detach().clone())
         correction = torch.bmm(K, inovation.unsqueeze(-1)).squeeze(-1)
-        # x_{t|t} = x_{t|t-1} + K * inovace
+        # x_{t|t} = x_{t|t-1} + K * innovation
         x_filtered = x_predicted + correction
         
-        # 4. AKTUALIZACE STAVŮ PRO PŘÍŠTÍ VOLÁNÍ (pro t+1)
-        # Posuneme stavy v čase
+        # 4. UPDATE STATES FOR NEXT CALL (for t+1)
+        # Shift states in time
         self.x_filtered_t_minus_2 = self.x_filtered_t_minus_1.detach()
-        self.x_filtered_t_minus_1 = x_filtered.detach() # .clone() není nutné
+        self.x_filtered_t_minus_1 = x_filtered.detach() # .clone() is not necessary
         self.x_pred_t_minus_1 = x_predicted.detach()
         self.y_t_minus_1 = y_t.detach()
         self.h_prev = h_new.detach()
@@ -98,8 +98,8 @@ class StateBayesianKalmanNet(nn.Module):
         return x_filtered, total_regularization
     
     def init_weights(self) -> None:
-        """Stabilní inicializace vah."""
-        print("INFO: Aplikuji 'Start Zero' inicializaci pro Kalman Gain.")
+        """Stable weight initialization."""
+        print("INFO: Applying 'Start Zero' initialization for Kalman Gain.")
         for name, m in self.dnn.named_modules():
             if isinstance(m, nn.Linear):
                 init.kaiming_uniform_(m.weight, nonlinearity='relu')
@@ -112,19 +112,19 @@ class StateBayesianKalmanNet(nn.Module):
                     if 'weight' in param_name: init.xavier_uniform_(param.data)
                     elif 'bias' in param_name: param.data.fill_(0)
 
-        # Inicializace výstupní vrstvy blízko nule
+        # Initialize output layer close to zero
         if hasattr(self.dnn, 'output_layer') and len(self.dnn.output_layer) > 0:
             last_layer = self.dnn.output_layer[-1] 
             if isinstance(last_layer, nn.Linear):
                 init.uniform_(last_layer.weight, -1e-3, 1e-3)
                 if last_layer.bias is not None:
                     init.zeros_(last_layer.bias)
-                print("DEBUG: Výstupní vrstva vynulována (Soft Start).")
+                print("DEBUG: Output layer zeroed (Soft Start).")
 
     def get_kalman_gain_history(self):
         """
-        Vrátí historii Kalmanových zisků pro aktuální sekvenci.
-        Výstupní tvar: [sequence_length, batch_size, state_dim, obs_dim]
+        Returns the history of Kalman gains for the current sequence.
+        Output shape: [sequence_length, batch_size, state_dim, obs_dim]
         """
         if not self.Kalman_gain_history:
             return None

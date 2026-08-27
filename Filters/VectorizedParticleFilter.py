@@ -13,7 +13,7 @@ class VectorizedParticleFilter:
         self.jitter = jitter
         self.resampling_threshold = resampling_threshold
         
-        # Načtení parametrů přímo do Torch tensorů na Device
+        # Load parameters directly into Torch tensors on Device
         self.state_dim = system_model.Q.shape[0]
         self.obs_dim = system_model.R.shape[0]
         
@@ -22,14 +22,14 @@ class VectorizedParticleFilter:
         self.Q = system_model.Q.clone().detach().to(self.device)
         self.R = system_model.R.clone().detach().to(self.device)
         
-        # --- Optimalizace Likelihoodu (Předpočítání inverze a determinantu) ---
+        # --- Likelihood optimization (Pre-compute inverse and determinant) ---
         # Log-Likelihood: -0.5 * (res.T @ R_inv @ res)
-        # Choleskyho rozklad pro numerickou stabilitu, pokud je R pozitivně definitní
+        # Cholesky decomposition for numerical stability if R is positive definite
         try:
             self.L_R = torch.linalg.cholesky(self.R)
             self.R_inv = torch.cholesky_inverse(self.L_R)
         except RuntimeError:
-            # Fallback pro případ, že R není PD (např. nuly na diagonále)
+            # Fallback if R is not PD (e.g., zeros on diagonal)
             self.R_inv = torch.inverse(self.R)
 
         self.dist_Q = torch.distributions.MultivariateNormal(
@@ -43,7 +43,7 @@ class VectorizedParticleFilter:
         self.weights = None
         
         if self.N <= 0:
-            raise ValueError("Počet částic (num_particles) musí být kladné celé číslo.")
+            raise ValueError("Number of particles (num_particles) must be a positive integer.")
 
     def _propagate_vectorized(self, particles, Q=None):
         predicted_particles = self.f(particles)
@@ -61,11 +61,11 @@ class VectorizedParticleFilter:
 
         expected_measurements = self.h(particles) # (N, obs_dim)
         
-        # Rezidua (z - h(x))
+        # Residuals (z - h(x))
         # z shape: (obs_dim,), expected shape: (N, obs_dim)
         residuals = z - expected_measurements 
         
-        # Pokud je R zadané externě a liší se, musí se přepočítat inverzi
+        # If R is provided externally and differs, inverse must be recomputed
         if R is not None and R is not self.R:
              R_inv_local = torch.inverse(R)
              term1 = residuals @ R_inv_local
@@ -80,20 +80,20 @@ class VectorizedParticleFilter:
 
     def _vectorized_systematic_resample(self, particles, weights):
         cumsum = torch.cumsum(weights, dim=0)
-        cumsum[-1] = 1.0  # Ošetření numerické chyby
+        cumsum[-1] = 1.0  # Handle numerical error
         
-        # Generování systematických bodů
+        # Generating systematic points
         step = 1.0 / self.N
-        u0 = torch.rand(1, device=self.device).item() * step # náhodný posun
-        u = torch.arange(self.N, device=self.device) * step + u0 # vektor bodů pro resampling
-        
-        # Nalezení indexů
+        u0 = torch.rand(1, device=self.device).item() * step # random shift
+        u = torch.arange(self.N, device=self.device) * step + u0 # vector of points for resampling
+
+        # Find indices
         indices = torch.searchsorted(cumsum, u)
         
-        # Ošetření přetečení indexů
+        # Handle index overflow
         indices = torch.clamp(indices, 0, self.N - 1)
         
-        # Výběr částic 
+        # Selecting particles
         new_particles = particles[indices]
         
         return new_particles
@@ -101,14 +101,14 @@ class VectorizedParticleFilter:
     def _normalize_weights(self, weights):
         sum_weights = torch.sum(weights)
         if sum_weights < 1e-15:
-            # Degenerace -> Uniformní reset
+            # Degeneration -> Uniform reset
             weights.fill_(1.0 / self.N)
         else:
             weights /= sum_weights
         return weights
 
     def get_estimate(self, particles, weights):
-        # vážený průměr
+        # weighted average
         mean = torch.sum(particles * weights.unsqueeze(1), dim=0) # (dim,)
         
         # Covariance
@@ -139,9 +139,9 @@ class VectorizedParticleFilter:
         
         x_filtered_history = torch.zeros(seq_len, self.state_dim, device=self.device)
         P_filtered_history = torch.zeros(seq_len, self.state_dim, self.state_dim, device=self.device)
-        # particles_history = [] # Ukládání historie žere VRAM
+        # particles_history = [] # Storing history consumes VRAM
         
-        # Inicializace částic
+        # Particle initialization
         if Ex0 is not None or P0 is not None:
              current_particles = torch.distributions.MultivariateNormal(start_mean, start_cov).sample((self.N,))
         else:
@@ -149,19 +149,19 @@ class VectorizedParticleFilter:
              
         current_weights = torch.full((self.N,), 1.0 / self.N, device=self.device)
         
-        # Uložení t=0
+        # Store t=0
         x_est, P_est = self.get_estimate(current_particles, current_weights)
         x_filtered_history[0] = x_est.squeeze()
         P_filtered_history[0] = P_est
-        # particles_history.append(current_particles.cpu().numpy()) # Pro vizualizaci
+        # particles_history.append(current_particles.cpu().numpy()) # For visualization
 
         n_threshold = self.N * self.resampling_threshold
 
-        # Vypnutí gradientů pro maximální rychlost
+        # Disable gradients for maximum speed
         with torch.no_grad():
             for k in tqdm(range(1, seq_len), desc="Processing PF (GPU)"):
                 
-                # 1. Propagace
+                # 1. Propagation
                 current_particles = self._propagate_vectorized(current_particles, Q if Q is not None else None)
                 
                 # 2. Likelihood
@@ -176,10 +176,10 @@ class VectorizedParticleFilter:
                 mahalanobis = (term1 * residuals).sum(dim=1)
                 log_likelihoods = -0.5 * mahalanobis
                 
-                # Update vah v log prostoru
+                # Update weights in log space
                 # log(w_new) = log(w_old) + log(likelihood)
-                # w_old je uniformní po resamplingu, takže jen přičteme likelihood
-                # Pokud nebyl resampling, je nutné přičíst log(current_weights)
+                # w_old is uniform after resampling, so we just add likelihood
+                # If no resampling, we need to add log(current_weights)
                 
                 log_weights_unnorm = torch.log(current_weights) + log_likelihoods
                 max_log = torch.max(log_weights_unnorm)
@@ -198,7 +198,7 @@ class VectorizedParticleFilter:
                         jitter_noise = torch.randn_like(current_particles) * self.jitter
                         current_particles = current_particles + jitter_noise
                         
-                # Ukládání                
+                # Storing
                 x_est, P_est = self.get_estimate(current_particles, current_weights)
                 x_filtered_history[k] = x_est.squeeze()
                 P_filtered_history[k] = P_est
