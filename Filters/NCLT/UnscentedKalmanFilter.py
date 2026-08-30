@@ -176,7 +176,7 @@ class UnscentedKalmanFilterNCLT:
             P_curr = self.P_predict_current
         
         for k in range(seq_len):
-            # --- 1. UPDATE STEP (Korekce) ---
+            # --- 1. UPDATE STEP (correction) ---
             # Try to correct the current state with the measurement (if not NaN)
             x_upd, P_upd, _, _ = self.update_step(x_curr, P_curr, y_seq[k])
             
@@ -184,12 +184,12 @@ class UnscentedKalmanFilterNCLT:
             x_hist[k] = x_upd.squeeze()
             P_hist[k] = P_upd
             
-            # --- 2. PREDICT STEP (Posun do budoucna) ---
+            # --- 2. PREDICT STEP (prediction) ---
             if k < seq_len - 1:
                 
                 u_k = u_seq[k] if u_seq is not None else None
                 
-                # Predikce x_{k+1|k}
+                # Prediction x_{k+1|k}
                 x_curr, P_curr = self.predict_step(x_upd, P_upd, u_k)
             
         return {'x_filtered': x_hist, 'P_filtered': P_hist}

@@ -93,7 +93,7 @@ class ParticleFilterTAN:
         current_particles = np.random.multivariate_normal(Ex0_np, P0_np, size=self.N)
         current_weights = np.full(self.N, 1.0 / self.N)
         
-        assert current_particles.shape == (self.N, self.state_dim), "Chyba inicializace!"
+        assert current_particles.shape == (self.N, self.state_dim), "Initialization error!"
         
         x_est, P_est = self.get_estimate(current_particles, current_weights)
         x_filtered_history[0] = x_est.squeeze()
@@ -112,14 +112,14 @@ class ParticleFilterTAN:
             current_particles = propagated_particles
             current_weights = self._normalize_weights(new_weights)
             
-            assert current_particles.shape == (self.N, self.state_dim), f"Chyba po propagaci v kroku {k}!"
+            assert current_particles.shape == (self.N, self.state_dim), f"Error after propagation in step {k}!"
 
             effective_N = 1. / np.sum(current_weights**2)
             if effective_N < n_threshold:
                 current_particles = self._systematic_resample(current_particles, current_weights)
                 current_weights.fill(1.0 / self.N)
                 
-            assert current_particles.shape == (self.N, self.state_dim), f"Chyba na konci kroku {k}!"
+            assert current_particles.shape == (self.N, self.state_dim), f"Error at the end of step {k}!"
 
             particles_history.append(current_particles.copy()) 
             

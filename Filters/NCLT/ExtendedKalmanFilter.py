@@ -102,7 +102,8 @@ class ExtendedKalmanFilterNCLT:
         # 4. Update stavu a kovariance
         x_filtered = x_predict + K @ innovation
         I = torch.eye(self.state_dim, device=self.device)
-        # Joseph form update pro numerickou stabilitu P = (I-KH)P(I-KH)' + KRK'
+        # Joseph form update for numerical stability
+        # The update is: P = (I-KH)P(I-KH)' + KRK'
         P_filtered = (I - K @ H_t) @ P_predict @ (I - K @ H_t).mT + K @ self.R @ K.mT
 
         return x_filtered, P_filtered, K, innovation
@@ -119,7 +120,7 @@ class ExtendedKalmanFilterNCLT:
         """
         seq_len = y_seq.shape[0]
         
-        # Inicializace historie
+        # Initialize history
         x_hist = torch.zeros(seq_len, self.state_dim, device=self.device)
         P_hist = torch.zeros(seq_len, self.state_dim, self.state_dim, device=self.device)
         
@@ -138,7 +139,7 @@ class ExtendedKalmanFilterNCLT:
             x_hist[k] = x_upd.squeeze()
             P_hist[k] = P_upd
 
-            # --- 2. PREDICT STEP (Posun do budoucna) ---
+            # --- 2. PREDICT STEP (prediction) ---
             # Prepare the prior for k+1
             if k < seq_len - 1:
                 # Processing input u
@@ -147,7 +148,7 @@ class ExtendedKalmanFilterNCLT:
                 else:
                     u_k = None
                 
-                # Predikce x_{k+1|k}
+                # Prediction x_{k+1|k}
                 x_curr, P_curr = self.predict_step(x_upd, P_upd, u_k)
 
         return {'x_filtered': x_hist, 'P_filtered': P_hist}
