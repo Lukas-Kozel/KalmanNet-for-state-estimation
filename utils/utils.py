@@ -4,62 +4,11 @@ import numpy as np
 import torch.nn.functional as F
 from copy import deepcopy
 
-def generate_data_deterministic_init_state(system, num_trajectories, seq_len):
-    """Generate trajectories for the given dynamic system (deterministic init)."""
-    device = system.Ex0.device
-    x_data = torch.zeros(num_trajectories, seq_len, system.state_dim, device=device)
-    y_data = torch.zeros(num_trajectories, seq_len, system.obs_dim, device=device)
-
-    for i in range(num_trajectories):
-        x = system.get_deterministic_initial_state()
-        for t in range(seq_len):
-            if t > 0:
-                x = system.step(x.unsqueeze(0)).squeeze(0)
-
-            y = system.measure(x.unsqueeze(0)).squeeze(0)
-
-            x_data[i, t, :] = x
-            y_data[i, t, :] = y
-
-    return x_data, y_data
-
 def store_model(model, path):
     """Store model state to a file."""
     torch.save(model.state_dict(), path)
     print(f"Model saved to {path}")
 
-
-# def calculate_anees_vectorized(x_true_tensor, x_hat_tensor, P_hat_tensor):
-#     """
-#     Vectorized ANEES computation.
-#     Accepts single large tensors per dataset.
-#     Input shape: [Num_Trajectories, Seq_Length, Dim]
-#     """
-#     if x_true_tensor.numel() == 0:
-#         return float('nan')
-
-#     if x_true_tensor.shape[:2] != x_hat_tensor.shape[:2] or x_true_tensor.shape[:2] != P_hat_tensor.shape[:2]:
-#         print("ERROR: Tensors for ANEES do not have the same number of trajectories or sequence lengths!")
-#         return float('nan')
-
-#     device = x_true_tensor.device
-#     jitter = torch.eye(P_hat_tensor.shape[-1], device=device) * 1e-6
-
-#     error = x_true_tensor[:, 1:, :] - x_hat_tensor[:, 1:, :]
-#     P_hat_seq = P_hat_tensor[:, 1:, :, :]
-    
-#     try:
-#         P_inv_seq = torch.linalg.inv(P_hat_seq + jitter)  # Shape [N, T-1, D, D]
-#         nees_tensor = (error.unsqueeze(-2) @ P_inv_seq @ error.unsqueeze(-1)).squeeze()  # Shape [N, T-1]
-
-#         avg_anees = torch.mean(nees_tensor).item()
-
-#         return avg_anees
-
-
-#     except torch.linalg.LinAlgError:
-#         print("WARNING: Matrix inversion failed during ANEES computation.")
-#         return float('nan')
     
 import torch
 import torch
@@ -121,85 +70,6 @@ def generate_data(system, num_trajectories, seq_len):
             
     return x_data, y_data
 
-def generate_data_for_map(system, num_trajectories, seq_len,force_initial_state_zero=False):
-    device = system.Ex0.device
-
-    MAX_VELOCITY = 42.0 # Simply to avoid outliers during data generation
-    
-    # Get map boundaries from the system model
-    min_x, max_x = system.min_x, system.max_x
-    min_y, max_y = system.min_y, system.max_y
-    print(f"INFO: Data generator uses bounds X:[{min_x:.2f}-{max_x:.2f}], Y:[{min_y:.2f}-{max_y:.2f}]")
-    print(f"INFO: Velocity clamped to +/- {MAX_VELOCITY} m/s")
-    print(f"INFO: Forced start at zero: {force_initial_state_zero}")
-    x_data = torch.zeros(num_trajectories, seq_len, system.state_dim, device=device)
-    y_data = torch.zeros(num_trajectories, seq_len, system.obs_dim, device=device)
-
-    generated_count = 0
-    total_attempts = 0
-    
-    while generated_count < num_trajectories:
-        total_attempts += 1
-        trajectory_is_valid = True
-        
-        temp_x_traj = torch.zeros(seq_len, system.state_dim, device=device)
-        temp_y_traj = torch.zeros(seq_len, system.obs_dim, device=device)
-        
-        if force_initial_state_zero:
-            # Training mode: force start at local origin
-            x_current = torch.tensor([[0.0, 0.0, 0.0, 0.0]], device=device)
-        else:
-            x_current = system.get_deterministic_initial_state().view(1, -1)
-
-        # If the start point is outside (should not happen if the map is properly shifted), clamp it
-        x_current[0, 0] = x_current[0, 0].clamp(min_x, max_x)
-        x_current[0, 1] = x_current[0, 1].clamp(min_y, max_y)
-
-        x_current[0, 2] = x_current[0, 2].clamp(-MAX_VELOCITY, MAX_VELOCITY)
-        x_current[0, 3] = x_current[0, 3].clamp(-MAX_VELOCITY, MAX_VELOCITY)
-        for t in range(seq_len):
-
-            px_curr, py_curr = x_current[0, 0].item(), x_current[0, 1].item()
-            if not (min_x <= px_curr <= max_x and min_y <= py_curr <= max_y):
-                trajectory_is_valid = False
-                break
-            # If the state is within the map, perform measurement and step
-            try:
-                y_current = system.measure(x_current)
-            except Exception as e:
-                print(f"Error during system.measure at step {t} for x_current={x_current}: {e}")
-                trajectory_is_valid = False
-                break
-                
-            temp_x_traj[t, :] = x_current.squeeze()
-            temp_y_traj[t, :] = y_current.squeeze()
-
-            try:
-                x_current = system.step(x_current)
-
-                x_current[0, 2] = torch.clamp(x_current[0, 2], -MAX_VELOCITY, MAX_VELOCITY)
-                x_current[0, 3] = torch.clamp(x_current[0, 3], -MAX_VELOCITY, MAX_VELOCITY)
-                
-            except Exception as e:
-                print(f"Error during system.step at step {t} for x_current={x_current}: {e}")
-                trajectory_is_valid = False
-                break
-
-        if trajectory_is_valid:
-            x_data[generated_count, :, :] = temp_x_traj
-            y_data[generated_count, :, :] = temp_y_traj
-            generated_count += 1
-            if generated_count % (num_trajectories // 10 if num_trajectories >= 10 else 1) == 0:
-                print(f"  Successfully generated trajectory {generated_count}/{num_trajectories} (Attempts: {total_attempts})")
-
-    print("-" * 30)
-    print("Data generation completed.")
-    print(f"Total number of attempts: {total_attempts}")
-    if total_attempts > 0:
-        print(f"Success rate (valid trajectories / attempts): { (num_trajectories / total_attempts) * 100 :.2f}%")
-    print(f"Total generated trajectories tensor shape: {x_data.shape}")
-    
-    return x_data, y_data
 
 def store_model(model, path):
     torch.save(model.state_dict(), path)
@@ -246,114 +116,7 @@ def calculate_anees(x_true_list, x_hat_list, P_hat_list):
             total_nees += torch.nanmean(nees_samples_run).item()
         
     return total_nees / num_runs if num_runs > 0 else 0.0
-def generate_data_for_map_safe(system, num_trajectories, seq_len, force_initial_state_zero=False):
-    device = system.Ex0.device
-    
-    # --- SAFETY LIMITS ---
-    HARD_CLAMP_VELOCITY = 20.0  # Physical limit of the simulation (so it doesn't explode)
-    SAFE_VELOCITY_LIMIT = 20.0  # Limit for the dataset (we only want "decent" trajectories)
-    MAX_HEIGHT_JUMP = 15.0     
-    MAP_MARGIN = 50.0           # Minimum distance from the map edge (meters)
-    
-    # Hranice mapy s rezervou
-    safe_min_x = system.min_x + MAP_MARGIN
-    safe_max_x = system.max_x - MAP_MARGIN
-    safe_min_y = system.min_y + MAP_MARGIN
-    safe_max_y = system.max_y - MAP_MARGIN
 
-    print(f"INFO: Generating SAFE data.")
-    print(f"  -> Velocity Limit: < {SAFE_VELOCITY_LIMIT} m/s")
-    print(f"  -> Map Margin: {MAP_MARGIN} m")
-    
-    x_data = torch.zeros(num_trajectories, seq_len, system.state_dim, device=device)
-    y_data = torch.zeros(num_trajectories, seq_len, system.obs_dim, device=device)
-
-    generated_count = 0
-    total_attempts = 0
-    
-    # Compute the logging interval safely (min 1)
-    log_interval = max(1, num_trajectories // 10)
-
-    while generated_count < num_trajectories:
-        total_attempts += 1
-        
-        # Auxiliary buffers for one trajectory
-        temp_x_traj = torch.zeros(seq_len, system.state_dim, device=device)
-        temp_y_traj = torch.zeros(seq_len, system.obs_dim, device=device)
-        
-        # 1. Inicializace
-        if force_initial_state_zero:
-            x_current = torch.tensor([[0.0, 0.0, 0.0, 0.0]], device=device)
-        else:
-            x_current = system.get_deterministic_initial_state().view(1, -1)
-            # Add a bit of randomness so each trajectory is not the same
-            x_current += torch.randn_like(x_current) * 0.1 
-
-        # Start check (must be safely inside the map)
-        if not (safe_min_x <= x_current[0,0] <= safe_max_x and safe_min_y <= x_current[0,1] <= safe_max_y):
-            continue # Zkusit znovu
-
-        trajectory_is_valid = True
-        
-        for t in range(seq_len):
-            # A) Saving the state
-            temp_x_traj[t, :] = x_current.squeeze()
-            
-            # B) Measurement
-            try:
-                y_current = system.measure(x_current)
-                temp_y_traj[t, :] = y_current.squeeze()
-            except:
-                trajectory_is_valid = False
-                break
-            
-            # --- FILTER 1: JUMPS IN TERRAIN ---
-            # If the height changed by more than X meters in 1 second, the terrain is "weird"
-            if t > 0:
-                h_diff = abs(temp_y_traj[t, 0] - temp_y_traj[t-1, 0])
-                if h_diff > MAX_HEIGHT_JUMP:
-                    trajectory_is_valid = False
-                    print(f"Discarding: Terrain jump {h_diff:.2f}m at step {t}")
-                    break
-
-            
-            try:
-                x_current = system.step(x_current)
-                
-                # Hard Clamp (pro fyziku simulace)
-                x_current[0, 2] = torch.clamp(x_current[0, 2], -HARD_CLAMP_VELOCITY, HARD_CLAMP_VELOCITY)
-                x_current[0, 3] = torch.clamp(x_current[0, 3], -HARD_CLAMP_VELOCITY, HARD_CLAMP_VELOCITY)
-                
-            except:
-                trajectory_is_valid = False
-                break
-            
-            # --- FILTR 2: OKRAJE MAPY ---
-            px, py = x_current[0, 0].item(), x_current[0, 1].item()
-            if not (safe_min_x <= px <= safe_max_x and safe_min_y <= py <= safe_max_y):
-                trajectory_is_valid = False
-                print("Discarding: Out of safe map bounds")
-                break
-                
-            # --- FILTR 3: RYCHLOST ---
-            vx, vy = x_current[0, 2].item(), x_current[0, 3].item()
-            if abs(vx) > SAFE_VELOCITY_LIMIT or abs(vy) > SAFE_VELOCITY_LIMIT:
-                trajectory_is_valid = False
-                print(f"Discarding: High velocity {vx:.1f}, {vy:.1f}")
-                break
-
-        # If the trajectory survived all checks, we save it
-        if trajectory_is_valid:
-            x_data[generated_count, :, :] = temp_x_traj
-            y_data[generated_count, :, :] = temp_y_traj
-            generated_count += 1
-            
-            # Here we use the safe interval
-            if generated_count % log_interval == 0:
-                print(f"  Generated {generated_count}/{num_trajectories} (Efficiency: {generated_count/total_attempts:.1%})")
-
-    print(f"Generation Complete. Total attempts: {total_attempts}. Efficiency: {num_trajectories/total_attempts:.1%}")
-    return x_data, y_data
 
 import os
 import matplotlib.pyplot as plt

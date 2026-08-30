@@ -18,18 +18,17 @@ Built in **Python 3.10 + PyTorch** (CUDA-accelerated).
 |------|-------------|
 | 📓 **`main.ipynb`** | **Primary entry point.** Main experimental notebook: system setup, training, and evaluation of filters vs. neural estimators. |
 | 📓 **`hyperparams_tests.ipynb`** | Hyperparameter exploration notebook (learning rates, GRU sizes, weight initializations, etc.). |
-| 📁 **`Filters/`** | Classical & statistical state estimators. Base classes and many variants at the top level; `Filters/NCLT/` and `Filters/TAN/` contain system-tuned implementations. Includes: `Kalman.py`, `ExtendedKalmanFilter.py`, `UnscentedKalmanFilter.py`, `ParticleFilter.py` (+ `SIR`, `Auxiliary`, `MH`, vectorized versions), `AdaptiveKalmanFilter_{offline,online,online_gated}.py`, `FastAdaptiveKalmanFilter_online.py`, `StructuredAdaptiveKalmanFilter_online.py`, and Mehra-style $K$-estimation methods. |
-| 🧠 **`NN_models/`** | Neural network estimators (PyTorch). Core: `KalmanNet.py`, `KalmanNet2.py`, `BayesianKalmanNet.py`, `LinearKalmanNet.py`, `KalmanNetWithKnownR.py`, `KalmanNet_withCovMatrix.py`, shared base in `kalman_net_base.py`. |
-| ⚙️ **`Systems/`** | State-space models / plant simulators: `LinearSystem.py`, `NonLinearSystem.py`, `DynamicSystem.py`, `DynamicSystemNCLT.py` (NCLT navigation dynamics + measurement models), `DynamicSystem_for_TAN.py`. |
-| 🧪 **`testcases/main/`** | End-to-end experimental scenarios; **`testcases/sanity_check/`** contains quick validation setups; **`testcases/results/`** stores experiment outputs. |
-| 📊 **`state_NN_models/`** | Saved/trained state-estimation network variants and their artifacts. |
-| 🧮 **`MDM/`** | Auxiliary model/method implementations used in experiments (see `MDM_functions_pytorch.py`). |
-| 📐 **`TAN/`** | Experimentation area for the Terrain Aided Navigation system model, including hyperparameter search (`find_optimal_params.py`). |
+| 📁 **`Filters/`** | Classical & statistical state estimators. Base classes and many variants at the top level; `Filters/NCLT/` and `Filters/TAN/` contain system-tuned implementations. |
+| 🧠 **`NN_models/`** | Legacy neural network estimators (PyTorch). These models process data in **batch mode** (taking the entire dataset trajectory at once). |
+| 📊 **`state_NN_models/`** | **Stateful** neural network estimators (KalmanNet, BayesianKalmanNet). These process data step-by-step (online fashion) and explicitly maintain hidden states. *Note: The `KalmanFormer` implementation found here was purely an experimental attempt and its correctness is not guaranteed.* |
+| ⚙️ **`Systems/`** | State-space models / plant simulators: `LinearSystem.py`, `NonLinearSystem.py`, `DynamicSystemNCLT.py`, etc. |
+| 🧪 **`testcases/main/`** | End-to-end experimental scenarios and quick validation setups. |
+| 🧮 **`MDM/`** | Auxiliary model/method implementations for the Measurement Difference Method. |
+| 📐 **`TAN/`** | Experimentation area for the Terrain Aided Navigation system model. |
 | 🛠️ **`utils/`** | Shared tooling: `trainer.py` (training loop), `losses.py` (MSE/NLL-type objectives), `utils.py` (helpers, metrics). |
-| 🚗 **`navigation NCLT dataset/`** | **All real-data navigation work lives here** (details below). |
+| 🚗 **`navigation NCLT dataset/`** | **All real-data navigation work lives here.** Includes downloaders, preprocessors, Optuna tuning, and complex multi-sensor fusion notebooks. |
 | 📚 **`literature/`** | Reference papers used during development. |
 | 💾 **`data/`** | Location for datasets / data artifacts referenced by the notebooks. |
-| ▶️ **`start.sh`** | Convenience launch script for the development environment. |
 
 ### 🚗 `navigation NCLT dataset/` — in detail
 
