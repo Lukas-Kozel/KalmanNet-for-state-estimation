@@ -1,0 +1,18 @@
+# Core Machine Learning & Math
+torch>=2.12.1
+numpy>=1.23.5
+scipy>=1.8.0
+pandas>=2.2.0
+scikit-learn>=1.7.2
+
+# Hyperparameter Tuning
+optuna>=4.7.0
+
+# Visualization & Progress
+matplotlib>=3.5.1
+seaborn>=0.13.2
+tqdm>=4.66.2
+
+# Jupyter Environment
+notebook>=7.4.0
+ipykernel>=6.29.5
