@@ -308,4 +308,26 @@ class AdaptiveKalmanFilter_online:
         self.z_buffer = []
         self.u_buffer = []
 
-        x_hist = torch.zeros(seq_len, self.kf.state_dim
+        x_hist = torch.zeros(seq_len, self.kf.state_dim, device=self.device)
+        P_hist = torch.zeros(seq_len, self.kf.state_dim, self.kf.state_dim, device=self.device)
+        Q_hist = []
+        R_hist = []
+
+        for k in tqdm(range(1,seq_len), desc="Processing sequence adaptively"):
+            y_t = y_seq[k]
+            u_t = u_seq[k] if u_seq is not None else None
+            
+            x, P, Q_curr, R_curr = self.step_adaptive(y_t, u_t)
+            
+            x_hist[k] = x.squeeze()
+            P_hist[k] = P
+            Q_hist.append(Q_curr.clone().detach())
+            R_hist.append(R_curr.clone().detach())
+            
+        results_dict = {
+            'x_filtered': x_hist,
+            'P_filtered': P_hist
+        }
+        
+        return results_dict, Q_hist, R_hist
+
