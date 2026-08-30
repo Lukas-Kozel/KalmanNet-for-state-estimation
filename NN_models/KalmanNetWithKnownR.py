@@ -5,7 +5,7 @@ from torch.func import jacrev
 
 class KalmanNetWithKnownR(nn.Module):
     """
-    KalmanNet Architektura #1 s tím, že je známa kovarianční matice měření R.
+    KalmanNet Architecture #1 with the measurement covariance matrix R known.
     """
     def __init__(self, system_model, device, hidden_size_multiplier=10):
         super(KalmanNetWithKnownR, self).__init__()
@@ -16,18 +16,18 @@ class KalmanNetWithKnownR(nn.Module):
         self.state_dim = system_model.state_dim
         self.obs_dim = system_model.obs_dim
 
-        # Heuristika pro velikost skrytého stavu
+        # Heuristic for the hidden state size
         moments_dim = self.state_dim*self.state_dim + self.obs_dim*self.obs_dim
         self.hidden_dim = moments_dim * hidden_size_multiplier
 
-        # Vstupní dimenze
+        # Input dimensions
         input_dim = self.state_dim + self.obs_dim
 
         self.input_layer = nn.Linear(input_dim, self.hidden_dim)
         self.gru = nn.GRU(self.hidden_dim, self.hidden_dim)
         self.output_layer = nn.Linear(self.hidden_dim, self.state_dim * self.obs_dim)
 
-        # vmap pro nelineární funkce
+        # vmap for nonlinear functions
         self.f = system_model.f
         self.h = system_model.h
 
@@ -53,7 +53,7 @@ class KalmanNetWithKnownR(nn.Module):
             y_predicted_list = [self.h(x.unsqueeze(-1)) for x in x_predicted]
             y_predicted = torch.stack(y_predicted_list).squeeze(-1)
 
-            # Výpočet vstupů
+            # Input computation
             innovation = y_t - y_predicted
 
 
@@ -62,7 +62,7 @@ class KalmanNetWithKnownR(nn.Module):
 
             nn_input = torch.cat([norm_delta_x, norm_innovation], dim=1)
 
-            # Průchod sítí
+            # Network forward pass
             out_input_layer = self.input_layer(nn_input)
             activated_input = F.relu(out_input_layer) 
             out_gru, h = self.gru(activated_input.unsqueeze(0), h)
@@ -74,16 +74,16 @@ class KalmanNetWithKnownR(nn.Module):
             correction = (K @ innovation.unsqueeze(-1)).squeeze(-1)
             x_hat_posterior = x_predicted + correction
 
-            # Příprava pro další krok
+            
             delta_x_hat_update = x_hat_posterior - x_predicted
             delta_x_hat_update_prev = delta_x_hat_update.clone()
             x_filtered_prev = x_hat_posterior.clone()
             
             x_hat_list.append(x_hat_posterior)
             
-            # Iterace přes prvky v batche pro výpočet P_predict
+            # Iterate over elements in the batch to compute P_predict
             for i in range(batch_size):
-                K_i = K[i]  # Kalmanův zisk pro i-tý prvek v batche
+                K_i = K[i]  # Kalman gain for the i-th element in the batch
 
                 x_predicted_i = x_predicted[i]
 

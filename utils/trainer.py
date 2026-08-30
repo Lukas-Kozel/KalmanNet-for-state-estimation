@@ -559,11 +559,11 @@ def training_session_trajectory_with_gaussian_nll_training_fcn(
                 
                 print(f"  Average MSE: {avg_val_mse:.4f}, Average ANEES: {avg_val_anees:.4f}")
                 
-                # --- LOGIKA UKLÁDÁNÍ MODELU ---
+                # --- MODEL SAVING LOGIC ---
                 if not np.isnan(avg_val_anees) and avg_val_anees > 0:
                     
                     if store_model_based_on_hybrid_score:
-                        # NOVÁ LOGIKA: Ukládání na základě Hybrid Score
+                        # NEW LOGIC: Saving based on Hybrid Score
                         anees_penalty = abs(avg_val_anees - state_dim)
                         current_hybrid_score = avg_val_mse + (calibration_parameter * anees_penalty)
                         print(f"  Hybrid Score: {current_hybrid_score:.4f} (Penalty: {anees_penalty:.4f} * {calibration_parameter})")
@@ -578,7 +578,7 @@ def training_session_trajectory_with_gaussian_nll_training_fcn(
                             best_model_state = deepcopy(model.state_dict())
                             
                     else:
-                        # PŮVODNÍ LOGIKA: Ukládání pouze na základě ANEES
+                        # ORIGINAL LOGIC: Saving based only on ANEES
                         if avg_val_anees < best_val_anees:
                             print("  >>> New best VALIDATION ANEES! Saving model. <<<")
                             best_val_anees = avg_val_anees
@@ -721,7 +721,7 @@ def train_state_KalmanNet(model, train_loader, val_loader, device,
                 val_loss_batch = criterion(predicted_val_trajectory, target_val_trajectory)
                 epoch_val_loss += val_loss_batch.item()
                 
-                # Výpočet čisté MSE pro informaci (celková chyba)
+                
                 mse_batch = metric_mse(predicted_val_trajectory, target_val_trajectory)
                 epoch_val_mse += mse_batch.item()
 
@@ -961,7 +961,7 @@ def train_state_KalmanNet_sliding_window(model, train_loader, val_loader, device
                 # 3. Detach at window end (before backward())
                 model._detach()
                 
-                # 4. Compute loss ONLY for this window (HYBRIDNÍ)
+                # 4. Compute loss ONLY for this window (HYBRID)
                 predicted_window = torch.stack(predictions_x, dim=1)
                 true_window = x_true_batch[:, t_start:t_end, :]
                 
@@ -988,7 +988,7 @@ def train_state_KalmanNet_sliding_window(model, train_loader, val_loader, device
         # --- VALIDATION ---
         model.eval()
         epoch_val_loss = 0.0
-        epoch_val_mse = 0.0 # Pro čistou metriku
+        epoch_val_mse = 0.0 # For the pure metric
 
         with torch.no_grad():
             for x_true_val, y_meas_val in val_loader:
@@ -1016,7 +1016,7 @@ def train_state_KalmanNet_sliding_window(model, train_loader, val_loader, device
         avg_val_loss = epoch_val_loss / len(val_loader)
         avg_val_mse = epoch_val_mse / len(val_loader)
         
-        # Logování s rozpadem
+        # Logging with breakdown
         if (epoch + 1) % 5 == 0:
             log_message = (f'Epoch [{epoch+1}/{epochs}] | '
                            f'Train Loss: {avg_train_loss:.4f} | '
@@ -1209,19 +1209,19 @@ def weighted_mse_loss(input, target, vel_weight=1000.0):
     Computes weighted MSE.
     Assumes shape [Batch, Time, 4], where 0-1 are position, 2-3 are velocity.
     """
-    # Chyba (rozdíl)
+    
     diff = input - target
     
-    # Umocnění na druhou
+    # Squaring
     squared_diff = diff ** 2
     
-    # MSE pro polohu (průměr přes batch, time a dimenze 0,1)
+    # MSE for position (average over batch, time and dimensions 0,1)
     loss_pos = squared_diff[:, :, 0:2].mean()
     
     # MSE for velocity (mean over batch, time, dims 2,3)
     loss_vel = squared_diff[:, :, 2:4].mean()
     
-    # Celková váhovaná ztráta (pro backpropagation)
+    # Total weighted loss (for backpropagation)
     total_loss = loss_pos + (vel_weight * loss_vel)
     
     return total_loss, loss_pos, loss_vel
@@ -1229,15 +1229,15 @@ def weighted_mse_loss(input, target, vel_weight=1000.0):
 def train_state_KalmanNet_sliding_window_weighted(model, train_loader, val_loader, device, 
                           epochs=100, lr=1e-3, clip_grad=10, early_stopping_patience=20,
                           tbptt_k=2, tbptt_w=10, optimizer_=torch.optim.Adam, weight_decay_=1e-4,
-                          velocity_weight=10000.0): # <--- PŘIDÁN PARAMETR VÁHY
+                          velocity_weight=10000.0): # <--- WEIGHT PARAMETER ADDED
     
-    # criterion = nn.MSELoss()  <-- TOTO UŽ NEPOUŽIJEME PRO LOSS
+    # criterion = nn.MSELoss()  <-- WE NO LONGER USE THIS FOR LOSS
     optimizer = optimizer_(model.parameters(), lr=lr, weight_decay=weight_decay_)
     
-    # Scheduler bude sledovat váhovanou loss
+    # Scheduler will track the weighted loss
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5, verbose=True)
     
-    best_val_loss_weighted = float('inf') # Sledujeme váhovanou loss pro best model
+    best_val_loss_weighted = float('inf') # We track the weighted loss for the best model
     epochs_no_improve = 0
     best_model_state = None
 
@@ -1258,7 +1258,7 @@ def train_state_KalmanNet_sliding_window_weighted(model, train_loader, val_loade
         model.train()
         train_loss_weighted_accum = 0.0
         
-        # Pro logování čistých MSE (bez váhy)
+        # For logging pure MSE (without weight)
         train_mse_pos_accum = 0.0
         train_mse_vel_accum = 0.0
 
@@ -1297,7 +1297,7 @@ def train_state_KalmanNet_sliding_window_weighted(model, train_loader, val_loade
                 predicted_window = torch.stack(predictions_x, dim=1)
                 true_window = x_true_batch[:, t_start:t_end, :]
                 
-                # --- VÝPOČET VÁHOVANÉ LOSS ---
+                # --- WEIGHTED LOSS COMPUTATION ---
                 loss, l_pos, l_vel = weighted_mse_loss(predicted_window, true_window, velocity_weight)
 
                 optimizer.zero_grad()
@@ -1310,7 +1310,7 @@ def train_state_KalmanNet_sliding_window_weighted(model, train_loader, val_loade
                 
                 batch_loss_weighted += loss.item()
                 
-                # Pro statistiku (jen informativně, neovlivňuje trénink)
+                # For statistics (informational only, does not affect training)
                 train_mse_pos_accum += l_pos.item()
                 train_mse_vel_accum += l_vel.item()
                 
@@ -1319,9 +1319,9 @@ def train_state_KalmanNet_sliding_window_weighted(model, train_loader, val_loade
             if num_windows > 0:
                 train_loss_weighted_accum += (batch_loss_weighted / num_windows)
         
-        # Průměry za epochu
+        # Epoch averages
         avg_train_loss = train_loss_weighted_accum / len(train_loader)
-        # (Pozn: Tyto akumulátory jsou zjednodušené, přesný průměr by chtěl počítat okna, ale pro log stačí)
+        # (Note: These accumulators are simplified; an exact average would require counting windows, but this is sufficient for logging)
         
         # --- VALIDATION LOOP ---
         model.eval()
@@ -1345,7 +1345,7 @@ def train_state_KalmanNet_sliding_window_weighted(model, train_loader, val_loade
                     
                 predicted_val_trajectory = torch.stack(val_predictions, dim=1)
                 
-                # Výpočet Loss na celé trajektorii
+                # Loss computation over the entire trajectory
                 loss_val, l_pos_val, l_vel_val = weighted_mse_loss(
                     predicted_val_trajectory, 
                     x_true_val[:, 1:, :], 
@@ -1365,8 +1365,8 @@ def train_state_KalmanNet_sliding_window_weighted(model, train_loader, val_loade
         # --- Logging ---
         # Print Weighted Loss (optimized) and raw MSE (for baseline comparison)
         print(f'Epoch [{epoch+1}/{epochs}] | Weighted Loss: {avg_val_loss:.2e}')
-        print(f'   > Val POS MSE: {avg_val_pos:.2f} (Cíl: < 3384721)')
-        print(f'   > Val VEL MSE: {avg_val_vel:.2f} (Cíl: < 128)')
+        print(f'   > Val POS MSE: {avg_val_pos:.2f} (Target: < 3384721)')
+        print(f'   > Val VEL MSE: {avg_val_vel:.2f} (Target: < 128)')
         
         # Save model based on weighted loss
         if avg_val_loss < best_val_loss_weighted:
@@ -1396,7 +1396,7 @@ def train_state_KalmanNet_sliding_window_with_control_input(model, train_loader,
                           epochs=100, lr=1e-3, clip_grad=10, early_stopping_patience=20,
                           tbptt_k=2, tbptt_w=10, optimizer_=torch.optim.Adam, weight_decay_=1e-4):
     
-    # Používáme standardní MSE bez vah, jak jsi požadoval
+    # We use standard MSE without weights, as you requested
     criterion = nn.MSELoss()
     optimizer = optimizer_(model.parameters(), lr=lr, weight_decay=weight_decay_)
     # scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.2, patience=10, verbose=True)
@@ -1421,7 +1421,7 @@ def train_state_KalmanNet_sliding_window_with_control_input(model, train_loader,
         model.train()
         train_loss = 0.0
 
-        # ZMĚNA 1: Unpacking 3 hodnot (x, y, u)
+        
         for x_true_batch, y_meas_batch, u_input_batch in train_loader:
             x_true_batch = x_true_batch.to(device)
             y_meas_batch = y_meas_batch.to(device)
@@ -1448,11 +1448,11 @@ def train_state_KalmanNet_sliding_window_with_control_input(model, train_loader,
                 for t in range(t_start, t_end):
                     y_t = y_meas_batch[:, t, :]
                     
-                    # ZMĚNA 2: Výběr správného vstupu u.
-                    # Pro přechod do času 't' potřebujeme vstup aplikovaný v 't-1'
+                    
+                    # To transition to time 't' we need the input applied at 't-1'
                     u_t = u_input_batch[:, t-1, :]
                     
-                    # ZMĚNA 3: Předání vstupu do modelu
+                    
                     step_output = model.step(y_t, u_t_raw=u_t)
                     
                     x_filtered_t = step_output[0] if returns_covariance else step_output
@@ -1492,7 +1492,7 @@ def train_state_KalmanNet_sliding_window_with_control_input(model, train_loader,
         model.eval()
         epoch_val_loss = 0.0
         with torch.no_grad():
-            # ZMĚNA 4: Unpacking ve validaci
+            
             for x_true_val, y_meas_val, u_input_val in val_loader:
                 x_true_val = x_true_val.to(device)
                 y_meas_val = y_meas_val.to(device)
@@ -1505,7 +1505,7 @@ def train_state_KalmanNet_sliding_window_with_control_input(model, train_loader,
                 for t in range(1, seq_len_val):
                     y_t_val = y_meas_val[:, t, :]
                     
-                    # ZMĚNA 5: Vstup u ve validaci
+                    
                     u_t_val = u_input_val[:, t-1, :]
                     step_output_val = model.step(y_t_val, u_t_raw=u_t_val)
                     
@@ -1559,9 +1559,9 @@ def train_state_KalmanNet_sliding_windowNCLT(model, train_loader, val_loader, de
     epochs_no_improve = 0
     best_model_state = None
     
-    # Detekce schopností modelu
+    # Detection of model capabilities
     if not hasattr(model, 'returns_covariance'):
-         # Pokud to model nemá, předpokládáme False (KalmanNet standardně nevrací P)
+         # If the model doesn't have it, we assume False (KalmanNet does not return P by default)
          returns_covariance = False
     else:
          returns_covariance = model.returns_covariance
@@ -1577,16 +1577,16 @@ def train_state_KalmanNet_sliding_windowNCLT(model, train_loader, val_loader, de
         train_loss = 0.0
         total_windows_epoch = 0
 
-        # === ZMĚNA 1: Unpacking 3 hodnot (X, Y, U) ===
+        
         for x_true_batch, y_meas_batch, u_input_batch in train_loader:
             x_true_batch = x_true_batch.to(device)
             y_meas_batch = y_meas_batch.to(device)
-            u_input_batch = u_input_batch.to(device) # Posíláme i vstupy na GPU
+            u_input_batch = u_input_batch.to(device) # We also send inputs to the GPU
 
             batch_size, seq_len, _ = x_true_batch.shape
             
-            # Reset stavu na začátku sekvence
-            # Startujeme z Ground Truth (Teacher Forcing 1. kroku)
+            # Reset state at the beginning of the sequence
+            
             model.reset(batch_size=batch_size, initial_state=x_true_batch[:, 0, :])
 
             total_loss_for_batch = 0.0
@@ -1605,9 +1605,9 @@ def train_state_KalmanNet_sliding_windowNCLT(model, train_loader, val_loader, de
                 # 1. Forward pass over window
                 for t in range(t_start, t_end):
                     y_t = y_meas_batch[:, t, :]
-                    u_t = u_input_batch[:, t, :] # === ZMĚNA 2: Bereme aktuální vstup ===
+                    u_t = u_input_batch[:, t, :] 
                     
-                    # === ZMĚNA 3: Volání step s u_t ===
+                    
                     step_output = model.step(y_t, u_t)
                     
                     x_filtered_t = step_output[0] if returns_covariance else step_output
@@ -1623,8 +1623,8 @@ def train_state_KalmanNet_sliding_windowNCLT(model, train_loader, val_loader, de
                 # 3. Compute loss ONLY for this window
                 predicted_window = torch.stack(predictions_x, dim=1)
                 
-                # Cíl: Pozice [px, py] (ignorujeme theta pro MSE, nebo ji zahrneme?)
-                # Zde počítáme MSE na celém stavu (pokud x_true má 3 dimenze a predikce taky)
+                # Target: Position [px, py] (we ignore theta for MSE, or should we include it?)
+                # Here we compute MSE over the entire state (if x_true has 3 dimensions and the prediction too)
                 true_window = x_true_batch[:, t_start:t_end, :]
                 
                 loss = criterion(predicted_window, true_window)
@@ -1652,7 +1652,7 @@ def train_state_KalmanNet_sliding_windowNCLT(model, train_loader, val_loader, de
         epoch_val_loss = 0.0
 
         with torch.no_grad():
-            # === ZMĚNA 4: Unpacking i ve validaci ===
+            
             for x_true_val, y_meas_val, u_input_val in val_loader:
                 x_true_val = x_true_val.to(device)
                 y_meas_val = y_meas_val.to(device)
@@ -1683,7 +1683,7 @@ def train_state_KalmanNet_sliding_windowNCLT(model, train_loader, val_loader, de
 
         avg_val_loss = epoch_val_loss / len(val_loader)
         
-        # Logování
+        # Logging
         print(f'Epoch [{epoch+1}/{epochs}] | Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f}')
         
         if avg_val_loss < best_val_loss:
@@ -1759,27 +1759,27 @@ def train_BayesianKalmanNet_with_input(
             target_sequence = x_true_batch[:, 1:, :]
             diff = x_hat_sequence - target_sequence
             
-            # 1. Kontrola "absolutní nuly" (přesná shoda)
-            # Pokud je součet absolutních rozdílů menší než epsilon, je to podezřelé (Data Leakage)
+            # 1. Check for "absolute zero" (exact match)
+            # If the sum of absolute differences is smaller than epsilon, it is suspicious (Data Leakage)
             is_perfect_match = (diff.abs().sum() < 1e-9).item()
             
-            # 2. Průměrná chyba (v metrech/jednotkách stavu)
+            
             mean_error = diff.abs().mean().item()
             
-            # 3. Kontrola "Variance Collapse" (zda se všechny vzorky shodují)
-            # Pokud je variance nulová, NLL exploduje.
+            # 3. Check for "Variance Collapse" (whether all samples match)
+            # If the variance is zero, NLL explodes.
             min_variance = cov_diag_sequence.min().item()
             is_zero_variance = (min_variance < 1e-9)
 
-            # VÝPIS (Logujeme při podezření nebo pravidelně)
+            # OUTPUT (Log when suspicious or regularly)
             if is_perfect_match or is_zero_variance or (train_iter_count % logging_period == 0):
                 print(f"\n[DIAGNOSTIKA iter {train_iter_count}]")
-                print(f"  -> Rozdíl (Pred - Target): {mean_error:.6f}")
-                print(f"  -> JE TO PŘESNÁ NULA? {'!!! ANO (PODEZŘELÉ) !!!' if is_perfect_match else 'Ne'}")
+                print(f"  -> Difference (Pred - Target): {mean_error:.6f}")
+                print(f"  -> IS IT EXACTLY ZERO? {'!!! YES (SUSPICIOUS) !!!' if is_perfect_match else 'No'}")
                 print(f"  -> Min Variance v batchi:  {min_variance:.2e}")
                 
                 if is_zero_variance:
-                    print("  !!! VAROVÁNÍ: Variance je 0. NLL Loss bude dělit nulou -> NaN !!!")
+                    print("  !!! WARNING: Variance is 0. NLL Loss will divide by zero -> NaN !!!")
             if train_iter_count < warmup_iterations:
                 loss = F.mse_loss(x_hat_sequence, target_sequence) + regularization_loss * 1.0
                 nll_loss = torch.tensor(0.0)
@@ -1880,31 +1880,31 @@ def train_BayesianKalmanNet_with_input(
 
 def gaussian_nll_robust_test(target, preds, var, min_var=1e-3, max_var=1e6):
     """
-    Robustní NLL loss pro trénování Bayesian KalmanNetu.
+    Robust NLL loss for training Bayesian KalmanNet.
     
     Args:
         target: Ground truth [Batch, Seq, Dim]
-        preds: Odhad stavu [Batch, Seq, Dim]
-        var: Odhad variance (diagonal) [Batch, Seq, Dim]
-        min_var: Minimální povolená variance (např. 1mm^2 = 1e-6, 
-                 ale pro stabilitu raději 1e-3 na začátku).
+        preds: State estimate [Batch, Seq, Dim]
+        var: Variance estimate (diagonal) [Batch, Seq, Dim]
+        min_var: Minimum allowed variance (e.g. 1mm^2 = 1e-6, 
+                 but for stability preferably 1e-3 at the start).
     """
     
-    # 1. CLAMP VARIANCE (Nejdůležitější krok)
-    # Říkáme modelu: "Nemůžeš si být jistější než 3 cm (sqrt(1e-3))."
-    # Tím zabráníme dělení nulou I collapse variance.
+    
+    # We tell the model: "You cannot be more certain than 3 cm (sqrt(1e-3))."
+    # This prevents division by zero I collapse variance.
     var = torch.clamp(var, min=min_var, max=max_var)
     
-    # 2. Výpočet kvadratické chyby
+    # 2. Calculation of the quadratic error
     error_sq = (preds - target) ** 2
     
     # 3. NLL Loss
-    # log(var) trestá velkou nejistotu
-    # error^2 / var trestá chybu (váženou jistotou)
+    # log(var) penalizes large uncertainty
+    # error^2 / var penalizes the error (weighted by certainty)
     loss = 0.5 * (torch.log(var) + error_sq / var)
     
-    # Poznámka: Zde NIKDY nepoužívej clamp na výsledek (loss), 
-    # protože bys zabil gradient, který nutí model ZVĚTŠIT varianci, když dělá chybu.
+    
+    # because you would kill the gradient that forces the model to INCREASE the variance when it makes an error.
     
     return loss.mean()
 def train_BayesianKalmanNet(
@@ -1959,27 +1959,27 @@ def train_BayesianKalmanNet(
             target_sequence = x_true_batch[:, 1:, :]
             diff = x_hat_sequence - target_sequence
             
-            # 1. Kontrola "absolutní nuly" (přesná shoda)
-            # Pokud je součet absolutních rozdílů menší než epsilon, je to podezřelé (Data Leakage)
+            # 1. Check for "absolute zero" (exact match)
+            # If the sum of absolute differences is smaller than epsilon, it is suspicious (Data Leakage)
             is_perfect_match = (diff.abs().sum() < 1e-9).item()
             
-            # 2. Průměrná chyba (v metrech/jednotkách stavu)
+            
             mean_error = diff.abs().mean().item()
             
-            # 3. Kontrola "Variance Collapse" (zda se všechny vzorky shodují)
-            # Pokud je variance nulová, NLL exploduje.
+            # 3. Check for "Variance Collapse" (whether all samples match)
+            # If the variance is zero, NLL explodes.
             min_variance = cov_diag_sequence.min().item()
             is_zero_variance = (min_variance < 1e-9)
 
-            # VÝPIS (Logujeme při podezření nebo pravidelně)
+            # OUTPUT (Log when suspicious or regularly)
             if is_perfect_match or is_zero_variance or (train_iter_count % logging_period == 0):
                 print(f"\n[DIAGNOSTIKA iter {train_iter_count}]")
-                print(f"  -> Rozdíl (Pred - Target): {mean_error:.6f}")
-                print(f"  -> JE TO PŘESNÁ NULA? {'!!! ANO (PODEZŘELÉ) !!!' if is_perfect_match else 'Ne'}")
+                print(f"  -> Difference (Pred - Target): {mean_error:.6f}")
+                print(f"  -> IS IT EXACTLY ZERO? {'!!! YES (SUSPICIOUS) !!!' if is_perfect_match else 'No'}")
                 print(f"  -> Min Variance v batchi:  {min_variance:.2e}")
                 
                 if is_zero_variance:
-                    print("  !!! VAROVÁNÍ: Variance je 0. NLL Loss bude dělit nulou -> NaN !!!")
+                    print("  !!! WARNING: Variance is 0. NLL Loss will divide by zero -> NaN !!!")
             if train_iter_count < warmup_iterations:
                 loss = F.mse_loss(x_hat_sequence, target_sequence) + regularization_loss * 1.0
                 nll_loss = gaussian_nll_safe(target_sequence, x_hat_sequence, cov_diag_sequence, min_var=1.0e-5,max_error_cap=100.0) 
@@ -2082,12 +2082,12 @@ def train_state_KalmanNetNCLT(model, train_loader, val_loader, device,
                           optimizer_type=torch.optim.AdamW, weight_decay=1e-5,
                           print_gradient=False, add_noise_to_initial_state=False, init_noise_std=None):
     """
-    Trénovací funkce optimalizovaná pro CPU/Integrovanou GPU.
-    - Odstraněno CUDA Mixed Precision.
-    - Přidáno detailní logování (Pos vs Vel Loss) pro každou epochu.
+    Training function optimized for CPU/Integrated GPU.
+    - Removed CUDA Mixed Precision.
+    - Added detailed logging (Pos vs Vel Loss) for each epoch.
     """
     
-    # 1. Definice Loss funkcí
+    # 1. Definition of Loss functions
     criterion = nn.MSELoss() 
     metric_mse = nn.MSELoss()
     
@@ -2097,19 +2097,19 @@ def train_state_KalmanNetNCLT(model, train_loader, val_loader, device,
     epochs_no_improve = 0
     best_model_state = None
     
-    # Detekce, zda model vrací kovarianci (pro logování stopy)
+    # Detection of whether the model returns covariance (for trace logging)
     if not hasattr(model, 'returns_covariance'):
         model.returns_covariance = False 
     returns_covariance = model.returns_covariance
 
-    # Defaultní šum pro start, pokud není zadán
+    # Default noise for start, if not specified
     if init_noise_std is None:
         # [px, py, vx, vy, theta, omega]
         init_noise_std = torch.tensor([5.0, 5.0, 2.0, 2.0, 0.5, 0.1], device=device)
     else:
         init_noise_std = init_noise_std.to(device)
 
-    print(f"🚀 Spouštím trénink (Device: {device}, Batches: {len(train_loader)})...")
+    print(f"🚀 Starting training (Device: {device}, Batches: {len(train_loader)})...")
 
     for epoch in range(epochs):
         # ==========================
@@ -2117,18 +2117,18 @@ def train_state_KalmanNetNCLT(model, train_loader, val_loader, device,
         # ==========================
         model.train()
         
-        # Akumulátory pro logování průměrů za epochu
+        # Accumulators for logging epoch averages
         epoch_train_loss = 0.0
         epoch_pos_loss = 0.0
         epoch_vel_loss = 0.0
         epoch_traces = []
         
         for batch_idx, batch_data in enumerate(train_loader):
-            # Rozbalení dat (x=Ground Truth, y=Measurements, u=Control Input)
+            # Unpacking data (x=Ground Truth, y=Measurements, u=Control Input)
             if len(batch_data) == 3:
                 x_true, y_meas, u_input = batch_data
             else:
-                raise ValueError("DataLoader musí vracet (x, y, u)!")
+                raise ValueError("DataLoader must return (x, y, u)!")
 
             x_true = x_true.to(device)
             y_meas = y_meas.to(device)
@@ -2140,7 +2140,7 @@ def train_state_KalmanNetNCLT(model, train_loader, val_loader, device,
             # A) Inicializace stavu
             initial_state = x_true[:, 0, :]
             if add_noise_to_initial_state:
-                # Přidání šumu pro robustnost vůči špatné inicializaci
+                # Adding noise for robustness against poor initialization
                 noise = torch.randn_like(initial_state) * init_noise_std
                 model.reset(batch_size=batch_size, initial_state=initial_state + noise)
             else:    
@@ -2149,7 +2149,7 @@ def train_state_KalmanNetNCLT(model, train_loader, val_loader, device,
             predictions_x = []
             predictions_P = []
 
-            # B) Smyčka přes časovou sekvenci (Forward pass)
+            # B) Loop over the time sequence (Forward pass)
             for t in range(1, seq_len):
                 y_t = y_meas[:, t, :]
                 u_t = u_input[:, t, :] # Vstup pro predikci
@@ -2164,11 +2164,11 @@ def train_state_KalmanNetNCLT(model, train_loader, val_loader, device,
 
                 predictions_x.append(x_filt)
 
-            # Sestavení trajektorie
+            # Trajectory assembly
             pred_traj = torch.stack(predictions_x, dim=1)
             target_traj = x_true[:, 1:, :] 
 
-            # C) Výpočet Loss
+            # C) Loss computation
             diff = pred_traj - target_traj
             
             # MSE pro pozici [px, py] (indexy 0, 1)
@@ -2176,34 +2176,34 @@ def train_state_KalmanNetNCLT(model, train_loader, val_loader, device,
             # MSE pro rychlost [vx, vy] (indexy 2, 3)
             loss_vel = torch.mean(diff[:, :, 2:4]**2) 
             
-            # Celková vážená loss (Důležité: ladit váhy podle toho, co chceš preferovat)
-            # Zde dáváme 100x váhu pozici (protože je v metrech) a 10x rychlosti
+            # Total weighted loss (Important: tune the weights according to what you want to prioritize)
+            # Here we give 100x weight to position (since it is in meters) and 10x to velocity
             loss = criterion(pred_traj, target_traj)
 
             # D) Backward pass
             loss.backward()
 
-            # E) Clipping gradientů (Nutné pro rekurentní sítě/Transformery)
+            # E) Gradient clipping (Necessary for recurrent networks/Transformers)
             if clip_grad > 0:
                 nn.utils.clip_grad_norm_(model.parameters(), clip_grad)
                 
             optimizer.step()
             
-            # F) Logování v rámci batche
+            # F) Logging within the batch
             epoch_train_loss += loss.item()
             epoch_pos_loss += loss_pos.item()
             epoch_vel_loss += loss_vel.item()
             
             if returns_covariance and predictions_P:
                 with torch.no_grad():
-                     # Výpočet stopy kovarianční matice (pro info o nejistotě)
+                     # Computing the trace of the covariance matrix (for uncertainty info)
                      cov_stack = torch.stack(predictions_P, dim=1)
                      trace = torch.mean(torch.diagonal(cov_stack, dim1=-2, dim2=-1).sum(-1)).item()
                      epoch_traces.append(trace)
 
-            # Volitelné: Print gradientu pro první batch (debug)
+            # Optional: Print gradient for the first batch (debug)
             if print_gradient and batch_idx == 0:
-                # Zkusíme najít váhy pro výpis gradientu
+                # Try to find weights for gradient printing
                 grad_norm = 0.0
                 for p in model.parameters():
                     if p.grad is not None:
@@ -2211,7 +2211,7 @@ def train_state_KalmanNetNCLT(model, train_loader, val_loader, device,
                         break
                 print(f" [DEBUG] Epoch {epoch+1} Grad Norm: {grad_norm:.4f}")
 
-        # Průměry za epochu
+        # Epoch averages
         avg_train_loss = epoch_train_loss / len(train_loader)
         avg_pos_loss = epoch_pos_loss / len(train_loader)
         avg_vel_loss = epoch_vel_loss / len(train_loader)
@@ -2240,7 +2240,7 @@ def train_state_KalmanNetNCLT(model, train_loader, val_loader, device,
                 pred_traj_val = torch.stack(val_preds, dim=1)
                 target_traj_val = x_val[:, 1:, :]
                 
-                # Val Loss (stejná metrika jako train pro porovnání)
+                # Val Loss (same metric as train for comparison)
                 diff_val = pred_traj_val - target_traj_val
                 loss_pos_val = torch.mean(diff_val[:, :, :2]**2)
                 loss_vel_val = torch.mean(diff_val[:, :, 2:4]**2)
@@ -2248,7 +2248,7 @@ def train_state_KalmanNetNCLT(model, train_loader, val_loader, device,
                 val_loss_weighted = criterion(pred_traj_val, target_traj_val)
                 epoch_val_loss += val_loss_weighted.item()
                 
-                # Čistá MSE (pro objektivní srovnání)
+                # Pure MSE (for objective comparison)
                 epoch_val_mse += metric_mse(pred_traj_val, target_traj_val).item()
 
         avg_val_loss = epoch_val_loss / len(val_loader)
@@ -2258,13 +2258,13 @@ def train_state_KalmanNetNCLT(model, train_loader, val_loader, device,
         # 3. LOGGING & SAVING
         # ==========================
         
-        # Formátovaný výpis
+        # Formatted output
         trace_str = f" | CovTrace: {avg_trace:.2f}" if returns_covariance else ""
         print(f"Ep [{epoch+1}/{epochs}] "
               f"Train: {avg_train_loss:.4f} (Pos: {avg_pos_loss:.2f}, Vel: {avg_vel_loss:.2f}) | "
               f"Val: {avg_val_loss:.4f} (MSE: {avg_val_mse:.4f}){trace_str}")
         
-        # Ukládání nejlepšího modelu
+        # Saving the best model
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
             epochs_no_improve = 0
@@ -2275,12 +2275,12 @@ def train_state_KalmanNetNCLT(model, train_loader, val_loader, device,
 
         # Early Stopping
         if epochs_no_improve >= early_stopping_patience:
-            print(f"\n⏹ Early stopping aktivováno po {epoch + 1} epochách.")
+            print(f"\n⏹ Early stopping triggered after {epoch + 1} epochs.")
             break
             
-    print("Trénink dokončen.")
+    print("Training finished.")
     if best_model_state:
-        print(f"Načítám nejlepší model s Val Loss: {best_val_loss:.6f}")
+        print(f"Loading best model with Val Loss: {best_val_loss:.6f}")
         model.load_state_dict(best_model_state)
         
     return model
@@ -2340,28 +2340,28 @@ def train_BayesianKalmanNetNCLT_test(
             target_sequence = x_true_batch[:, 1:, :]
             diff = x_hat_sequence - target_sequence
             
-            # 1. Kontrola "absolutní nuly" (přesná shoda)
-            # Pokud je součet absolutních rozdílů menší než epsilon, je to podezřelé (Data Leakage)
+            # 1. Check for "absolute zero" (exact match)
+            # If the sum of absolute differences is smaller than epsilon, it is suspicious (Data Leakage)
             is_perfect_match = (diff.abs().sum() < 1e-9).item()
             
-            # 2. Průměrná chyba (v metrech/jednotkách stavu)
+            
             mean_error = diff.abs().mean().item()
             
-            # 3. Kontrola "Variance Collapse" (zda se všechny vzorky shodují)
-            # Pokud je variance nulová, NLL exploduje.
+            # 3. Check for "Variance Collapse" (whether all samples match)
+            # If the variance is zero, NLL explodes.
             mean_variance = cov_diag_sequence.mean().item()
             min_variance = cov_diag_sequence.min().item()
             
-            # Změna logiky warningu:
-            # Vadí nám jen, pokud je PRŮMĚRNÁ variance nulová (celý model zkolaboval)
+            
+            # We only care if the MEAN variance is zero (the whole model collapsed)
             if mean_variance < 1e-9:
-                 print(f"!!! VAROVÁNÍ: Model zkolaboval (Mean Var={mean_variance:.2e}) !!!")
+                 print(f"!!! WARNING: Model collapsed (Mean Var={mean_variance:.2e}) !!!")
             is_zero_variance = (min_variance < 1e-9)
 
-            # VÝPIS (Logujeme při podezření nebo pravidelně)
+            # OUTPUT (Log when suspicious or periodically)
             if is_perfect_match or is_zero_variance or (train_iter_count % logging_period == 0):
                 print(f"\n[DIAGNOSTIKA iter {train_iter_count}]")
-                print(f"  -> Rozdíl (Pred - Target): {mean_error:.6f}")
+                print(f"  -> Difference (Pred - Target): {mean_error:.6f}")
                 print(f"  -> Min Variance v batchi:  {min_variance:.2e}")
                 print(f"  -> Mean Variance v batchi: {mean_variance:.2e}")
 
@@ -2474,11 +2474,11 @@ def train_kalmanformer_nclt_full_sequence(model, train_loader, val_loader, devic
                           optimizer_type=torch.optim.AdamW, weight_decay=1e-4,
                           print_gradient=False, add_noise_to_initial_state=False, init_noise_std=None):
     """
-    Trénovací funkce pro KalmanFormer na celých sekvencích (Full BPTT).
-    Kompatibilní s modelem, který má interní Rolling Buffer.
+    Training function for KalmanFormer on full sequences (Full BPTT).
+    Compatible with a model that has an internal Rolling Buffer.
     """
     
-    # 1. Definice Loss funkcí
+    # 1. Definition of Loss functions
     criterion = nn.MSELoss() 
     metric_mse = nn.MSELoss()
     
@@ -2488,16 +2488,16 @@ def train_kalmanformer_nclt_full_sequence(model, train_loader, val_loader, devic
     epochs_no_improve = 0
     best_model_state = None
     
-    # Detekce schopností modelu
+    # Detection of model capabilities
     returns_covariance = getattr(model, 'returns_covariance', False)
 
-    # Defaultní šum pro start
+    # Default noise for start
     if init_noise_std is None:
         init_noise_std = torch.tensor([5.0, 5.0, 2.0, 2.0, 0.5, 0.1], device=device)
     else:
         init_noise_std = init_noise_std.to(device)
 
-    print(f"🚀 Spouštím Full-Sequence trénink (Len: 100, Device: {device})...")
+    print(f"🚀 Starting Full-Sequence training (Len: 100, Device: {device})...")
 
     for epoch in range(epochs):
         # ==========================
@@ -2513,7 +2513,7 @@ def train_kalmanformer_nclt_full_sequence(model, train_loader, val_loader, devic
             if len(batch_data) == 3:
                 x_true, y_meas, u_input = batch_data
             else:
-                raise ValueError("DataLoader musí vracet (x, y, u)!")
+                raise ValueError("DataLoader must return (x, y, u)!")
 
             x_true = x_true.to(device)
             y_meas = y_meas.to(device)
@@ -2523,8 +2523,8 @@ def train_kalmanformer_nclt_full_sequence(model, train_loader, val_loader, devic
             batch_size, seq_len, _ = x_true.shape
             
             # A) Inicializace stavu
-            # ZDE SE DĚJE KOUZLO: model.reset() vymaže interní buffer Transformeru,
-            # takže začínáme s "čistým štítem" pro novou sekvenci.
+            # THIS IS WHERE THE MAGIC HAPPENS: model.reset() clears the Transformer's internal buffer,
+            # so we start with a "clean slate" for the new sequence.
             initial_state = x_true[:, 0, :]
             if add_noise_to_initial_state:
                 noise = torch.randn_like(initial_state) * init_noise_std
@@ -2534,13 +2534,13 @@ def train_kalmanformer_nclt_full_sequence(model, train_loader, val_loader, devic
 
             predictions_x = []
             
-            # B) Smyčka přes časovou sekvenci (1 až 100)
-            # Díky naší úpravě třídy KalmanFormer, model.step() automaticky:
-            # 1. Vezme aktuální měření.
-            # 2. Přidá ho do interního bufferu (okna).
-            # 3. Spustí Transformer nad celým oknem.
-            # 4. Vrátí odhad pro aktuální čas.
-            # Trenér tedy nemusí nic "krájet" ani posouvat.
+            # B) Loop over the time sequence (1 to 100)
+            # Thanks to our modification of the KalmanFormer class, model.step() automatically:
+            # 1. Takes the current measurement.
+            # 2. Adds it to the internal buffer (window).
+            # 3. Runs the Transformer over the entire window.
+            # 4. Returns the estimate for the current time.
+            # The trainer therefore doesn't have to "slice" or shift anything.
             for t in range(1, seq_len):
                 y_t = y_meas[:, t, :]
                 u_t = u_input[:, t, :]
@@ -2548,28 +2548,28 @@ def train_kalmanformer_nclt_full_sequence(model, train_loader, val_loader, devic
                 step_output = model.step(y_t, u_t)
                 
                 if returns_covariance:
-                    x_filt, _ = step_output # Ignorujeme P pro trénink, pokud tam je
+                    x_filt, _ = step_output # We ignore P during training, if it is present
                 else:
                     x_filt = step_output
 
                 predictions_x.append(x_filt)
 
-            # Sestavení trajektorie
+            # Trajectory assembly
             pred_traj = torch.stack(predictions_x, dim=1)
             target_traj = x_true[:, 1:, :] 
 
-            # C) Výpočet Loss
+            # C) Loss computation
             diff = pred_traj - target_traj
             loss_pos = torch.mean(diff[:, :, :2]**2) 
             loss_vel = torch.mean(diff[:, :, 2:4]**2) 
             
             loss = criterion(pred_traj, target_traj)
 
-            # D) Backward pass (přes celých 100 kroků zpět)
+            
             loss.backward()
 
-            # E) Clipping gradientů - KRITICKÉ PRO TRANSFORMERY
-            # U délky 100 je riziko exploze gradientu. Clipování to zachrání.
+            # E) Gradient clipping - CRITICAL FOR TRANSFORMERS
+            # With length 100 there is a risk of gradient explosion. Clipping saves it.
             if clip_grad > 0:
                 nn.utils.clip_grad_norm_(model.parameters(), clip_grad)
                 
@@ -2587,7 +2587,7 @@ def train_kalmanformer_nclt_full_sequence(model, train_loader, val_loader, devic
                         grad_norm += p.grad.norm().item()
                 print(f" [DEBUG] Epoch {epoch+1} Grad Norm: {grad_norm:.4f}")
 
-        # Průměry
+        # Averages
         avg_train_loss = epoch_train_loss / len(train_loader)
         avg_pos_loss = epoch_pos_loss / len(train_loader)
         avg_vel_loss = epoch_vel_loss / len(train_loader)
@@ -2605,7 +2605,7 @@ def train_kalmanformer_nclt_full_sequence(model, train_loader, val_loader, devic
                 
                 batch_size_val, seq_len_val, _ = x_val.shape
                 
-                # Reset i pro validaci (aby buffer neobsahoval data z tréninku)
+                # Reset also for validation (so the buffer contains no training data)
                 model.reset(batch_size=batch_size_val, initial_state=x_val[:,0,:])
                 
                 val_preds = []
@@ -2637,10 +2637,10 @@ def train_kalmanformer_nclt_full_sequence(model, train_loader, val_loader, devic
             epochs_no_improve += 1
 
         if epochs_no_improve >= early_stopping_patience:
-            print(f"\n⏹ Early stopping aktivováno po {epoch + 1} epochách.")
+            print(f"\n⏹ Early stopping activated after {epoch + 1} epochs.")
             break
             
-    print("Trénink dokončen.")
+    print("Training finished.")
     if best_model_state:
         model.load_state_dict(best_model_state)
         
@@ -2652,15 +2652,15 @@ def train_state_KalmanNetTAN(model, train_loader, val_loader, device,
                           optimizer_type=torch.optim.AdamW, weight_decay=1e-5,
                           print_gradient=False, add_noise_to_initial_state=False, init_noise_std=None):
     """
-    Robustní tréninková funkce pro KalmanNet s Huber Loss (prevence exploze gradientů).
+    Robust training function for KalmanNet with Huber Loss (prevention of gradient explosion).
     """
     
-    # --- 1. ZMĚNA: Huber Loss pro stabilitu ---
-    # Delta=10.0 znamená: Chyby do 10 metrů trestáme kvadraticky (přesnost), 
-    # chyby nad 10 metrů lineárně (robustnost proti divergenci).
+    
+    # Delta=10.0 means: Errors up to 10 meters are penalized quadratically (accuracy), 
+    # errors above 10 meters linearly (robustness against divergence).
     # criterion = nn.HuberLoss(delta=10.0) 
     criterion = nn.MSELoss()
-    # Metrika pro lidské čtení (MSE, abychom viděli reálný rozptyl)
+    # Metric for human reading (MSE, so we can see the real variance)
     metric_mse = nn.MSELoss()
     
     optimizer = optimizer_type(model.parameters(), lr=lr, weight_decay=weight_decay)
@@ -2699,7 +2699,7 @@ def train_state_KalmanNetTAN(model, train_loader, val_loader, device,
             optimizer.zero_grad()
             batch_size, seq_len, _ = x_true_batch.shape
             
-            # Inicializace stavu (s případným šumem)
+            # State initialization (with optional noise)
             initial_state = x_true_batch[:, 0, :]
             if add_noise_to_initial_state:
                 noise = torch.randn_like(initial_state) * init_noise_std
@@ -2711,7 +2711,7 @@ def train_state_KalmanNetTAN(model, train_loader, val_loader, device,
             predictions_x = []
             predictions_P = []
 
-            # Forward pass v čase
+            # Forward pass in time
             for t in range(1, seq_len):
                 y_t = y_meas_batch[:, t, :]
                 step_output = model.step(y_t)
@@ -2727,10 +2727,10 @@ def train_state_KalmanNetTAN(model, train_loader, val_loader, device,
             predicted_trajectory = torch.stack(predictions_x, dim=1)
             target_trajectory = x_true_batch[:, 1:, :]
 
-            # Sběr průměrné stopy kovariance (pro diagnostiku)
+            # Collecting the average covariance trace (for diagnostics)
             if returns_covariance and predictions_P:
                 predicted_cov_trajectory = torch.stack(predictions_P, dim=1)
-                # Výpočet stopy (Trace) kovarianční matice P
+                # Computing the trace of the covariance matrix P
                 current_trace = torch.mean(torch.sum(torch.diagonal(predicted_cov_trajectory.detach(), offset=0, dim1=-2, dim2=-1), dim=-1)).item()
                 epoch_traces.append(current_trace)
 
@@ -2738,7 +2738,7 @@ def train_state_KalmanNetTAN(model, train_loader, val_loader, device,
             loss = criterion(predicted_trajectory, target_trajectory)
             loss.backward()
 
-            # Statistiky (pro výpis, ne pro gradient)
+            # Statistics (for output, not for gradient)
             with torch.no_grad():
                 diff = predicted_trajectory - target_trajectory
                 pos_mse = torch.mean(diff[:, :, :2]**2).item()
@@ -2771,7 +2771,7 @@ def train_state_KalmanNetTAN(model, train_loader, val_loader, device,
                 batch_size_val, seq_len_val, _ = x_true_val.shape
 
                 initial_state = x_true_val[:,0,:]
-                model.reset(batch_size=batch_size_val, initial_state=initial_state) # Validace bez šumu init stavu!
+                model.reset(batch_size=batch_size_val, initial_state=initial_state) # Validation without init state noise!
                 
                 val_predictions = []
                 for t in range(1, seq_len_val):
@@ -2790,7 +2790,7 @@ def train_state_KalmanNetTAN(model, train_loader, val_loader, device,
                 val_loss_batch = criterion(predicted_val_trajectory, target_val_trajectory)
                 epoch_val_loss += val_loss_batch.item()
                 
-                # Čistá MSE pro report
+                # Clean MSE for the report
                 mse_batch = metric_mse(predicted_val_trajectory, target_val_trajectory)
                 epoch_val_mse += mse_batch.item()
 
@@ -2798,10 +2798,10 @@ def train_state_KalmanNetTAN(model, train_loader, val_loader, device,
         avg_val_mse = epoch_val_mse / len(val_loader)
         
         # --- Logging ---
-        # 1. Nejprve sestavíme základní log
+        # 1. First we build the base log
         log_str = f'Epoch [{epoch+1}/{epochs}] | Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f}'
         
-        # 2. Check na zlepšení
+        # 2. Check for improvement
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
             epochs_no_improve = 0
@@ -2811,14 +2811,14 @@ def train_state_KalmanNetTAN(model, train_loader, val_loader, device,
             epochs_no_improve += 1
             save_msg = ""
 
-        # 3. Periodický výpis (tady byl BUG - log_message neexistovala)
+        # 3. Periodic output (there was a BUG here - log_message did not exist)
         if (epoch + 1) % 5 == 0:
             detailed_msg = f"{log_str} | PosMSE: {avg_pos_mse:.1f}, VelMSE: {avg_vel_mse:.1f}"
             if returns_covariance:
                 detailed_msg += f" | CovTrace: {avg_epoch_trace:.1f}"
             print(detailed_msg + save_msg)
         
-        # Výpis pouze při uložení (pokud není periodický)
+        # Output only on save (if not periodic)
         elif save_msg: 
              print(log_str + save_msg)
 
@@ -2901,7 +2901,7 @@ def train_state_KalmanNet_sliding_windowTAN(model, train_loader, val_loader, dev
                 # 3. Detach at window end (before backward())
                 model._detach()
                 
-                # 4. Compute loss ONLY for this window (HYBRIDNÍ)
+                # 4. Compute loss ONLY for this window (HYBRID)
                 predicted_window = torch.stack(predictions_x, dim=1)
                 true_window = x_true_batch[:, t_start:t_end, :]
                 
@@ -2928,7 +2928,7 @@ def train_state_KalmanNet_sliding_windowTAN(model, train_loader, val_loader, dev
         # --- VALIDATION ---
         model.eval()
         epoch_val_loss = 0.0
-        epoch_val_mse = 0.0 # Pro čistou metriku
+        epoch_val_mse = 0.0 # For a clean metric
 
         with torch.no_grad():
             for x_true_val, y_meas_val in val_loader:
@@ -2952,7 +2952,7 @@ def train_state_KalmanNet_sliding_windowTAN(model, train_loader, val_loader, dev
                 target_val_trajectory = x_true_val[:, 1:, :]
                 val_loss_batch = criterion(predicted_val_trajectory, target_val_trajectory)
                 epoch_val_loss += val_loss_batch.item()
-# Validační metrika (MSE - pro reportování)
+# Validation metric (MSE - for reporting)
                 mse_batch = metric_mse(predicted_val_trajectory, target_val_trajectory)
                 epoch_val_mse += mse_batch.item()
 
@@ -3002,7 +3002,7 @@ def train_BayesianKalmanNetTAN(
     # torch.autograd.set_detect_anomaly(True)
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay_)
     
-    # Inicializace metrik pro ukládání (VŽDY sledujeme MSE)
+    # Initialize metrics for saving (we ALWAYS track MSE)
     best_val_mse = float('inf') 
     best_val_anees = float('inf') # Jen pro informaci
     
@@ -3012,7 +3012,7 @@ def train_BayesianKalmanNetTAN(
     train_iter_count = 0
     done = False
 
-    print("INFO: Trénink bude ukládat nejlepší model VŽDY podle metriky: MSE")
+    print("INFO: Training will always save the best model according to the metric: MSE")
 
     while not done:
         model.train()
@@ -3031,7 +3031,7 @@ def train_BayesianKalmanNetTAN(
             optimizer.zero_grad()
             batch_size, seq_len, _ = x_true_batch.shape
             
-            # 1. Batch Expansion (J paralelních běhů)
+            # 1. Batch Expansion (J parallel runs)
             x_true_exp = x_true_batch.repeat_interleave(J_samples, dim=0)
             y_meas_exp = y_meas_batch.repeat_interleave(J_samples, dim=0)
             
@@ -3064,25 +3064,25 @@ def train_BayesianKalmanNetTAN(
             regularization_loss = torch.stack(regs_list).mean()
             target_sequence = x_true_batch[:, 1:, :]
             
-            # 4. Diagnostika (Volitelné logování)
+            # 4. Diagnostics (optional logging)
             if train_iter_count % logging_period == 0:
                 diff = x_hat_mean - target_sequence
                 mean_error = diff.abs().mean().item()
                 min_variance = x_hat_var.min().item()
                 mean_variance = x_hat_var.mean().item()
                 print(f"\n[DIAGNOSTIKA iter {train_iter_count}]")
-                print(f"  -> Rozdíl (Pred - Target): {mean_error:.6f}")
+                print(f"  -> Difference (Pred - Target): {mean_error:.6f}")
                 print(f"  -> Min Variance v batchi:  {min_variance:.2e}")
                 print(f"  -> Mean Variance v batchi: {mean_variance:.2e}")
 
-            # 5. Výpočet Loss
+            # 5. Loss computation
             if train_iter_count < warmup_iterations:
-                # Fáze 1: Učíme se trefit cíl (MSE)
+                # Phase 1: Learning to hit the target (MSE)
                 loss = F.mse_loss(x_hat_mean, target_sequence) + regularization_loss
                 nll_loss = gaussian_nll_safe(target_sequence, x_hat_mean, x_hat_var, min_var=1.0e-5, max_error_cap=100.0)
             else:
-                # Fáze 2: Učíme se nejistotu (NLL)
-                # (Předpokládám, že gaussian_nll_safe je dostupná v scope)
+                # Phase 2: Learning the uncertainty (NLL)
+                # (Assuming gaussian_nll_safe is available in scope)
                 nll_loss = gaussian_nll_safe(target_sequence, x_hat_mean, x_hat_var, min_var=1.0e-5, max_error_cap=100.0)
                 loss = nll_loss + regularization_loss
             
@@ -3097,7 +3097,7 @@ def train_BayesianKalmanNetTAN(
             optimizer.step()
             train_iter_count += 1
             
-            # 6. Logování průběhu
+            # 6. Progress logging
             if train_iter_count % logging_period == 0:
                 dropout_info = ""
                 if hasattr(model.dnn, 'concrete_dropout1'):
@@ -3116,7 +3116,7 @@ def train_BayesianKalmanNetTAN(
             if train_iter_count > 0 and train_iter_count % validation_period == 0:
                 print(f"\n--- Validation at iteration {train_iter_count} ---")
                 
-                # Přepneme model do eval, ale musíme zachovat Dropout!
+                # Switch the model to eval, but we must keep Dropout!
                 model.eval()
                 def enable_dropout(m):
                     if type(m) == torch.nn.Dropout: m.train()
@@ -3150,15 +3150,15 @@ def train_BayesianKalmanNetTAN(
                         # Metriky pro batch
                         val_mse_list.append(F.mse_loss(val_preds, val_targets).item())
                         
-                        # Data pro ANEES (pokud je potřeba)
-                        # ... (zjednodušeno pro stručnost, ANEES se počítá stejně jako předtím) ...
-                        # Pro účely "Save Best MSE" stačí MSE list.
+                        # Data for ANEES (if needed)
+                        # ... (simplified for brevity, ANEES is computed the same as before) ...
+                        # For the purposes of "Save Best MSE", the MSE list is sufficient.
                         
-                        # Pro kompletní výpočet ANEES přidejme data do listů:
+                        # For the complete ANEES calculation, add data to the lists:
                         diff = val_ensemble - val_preds.unsqueeze(0)
                         val_covs = (diff.unsqueeze(-1) @ diff.unsqueeze(-2)).mean(dim=0) + 1e-2
                         
-                        # Rekonstrukce plných trajektorií (včetně t=0)
+                        # Reconstruction of full trajectories (including t=0)
                         init_state = x_true_val[:, 0, :].unsqueeze(1)
                         full_x_hat = torch.cat([init_state, val_preds], dim=1)
                         P0 = model.system_model.P0.unsqueeze(0).repeat(val_bs, 1, 1).unsqueeze(1)
@@ -3168,11 +3168,11 @@ def train_BayesianKalmanNetTAN(
                         all_val_x_hat.append(full_x_hat.cpu())
                         all_val_P_hat.append(full_P_hat.cpu())
 
-                # Agregace výsledků
+                # Aggregation of results
                 avg_val_mse = np.mean(val_mse_list)
                 
-                # Výpočet ANEES (Vectorized)
-                # Předpokládám, že calculate_anees_vectorized je dostupná
+                # ANEES calculation (Vectorized)
+                # I assume calculate_anees_vectorized is available
                 final_x_true = torch.cat(all_val_x_true, dim=0)
                 final_x_hat = torch.cat(all_val_x_hat, dim=0)
                 final_P_hat = torch.cat(all_val_P_hat, dim=0)
@@ -3180,11 +3180,11 @@ def train_BayesianKalmanNetTAN(
                 
                 print(f"  Average MSE: {avg_val_mse:.4f}, Average ANEES: {avg_val_anees:.4f}")
                 
-                # === STRATEGIE UKLÁDÁNÍ: VŽDY PODLE MSE ===
+                # === SAVING STRATEGY: ALWAYS BY MSE ===
                 if avg_val_mse < best_val_mse:
                     print(f"  >>> New Best MSE ({avg_val_mse:.4f})! Saving model. <<<")
                     best_val_mse = avg_val_mse
-                    best_val_anees = avg_val_anees # Uložíme si odpovídající ANEES
+                    best_val_anees = avg_val_anees # Save the corresponding ANEES
                     best_iter_count = train_iter_count
                     
                     score_at_best['val_mse'] = avg_val_mse

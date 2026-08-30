@@ -10,7 +10,7 @@ from tqdm import tqdm
 DATA_ROOT = 'data' 
 OUTPUT_DIR = os.path.join(DATA_ROOT, 'processed')
 
-# === POMOCNÉ FUNKCE ===
+# === HELPER FUNCTIONS ===
 
 def _compute_gps_conversion_params():
     LAT_0 = 0.738167915410646
@@ -36,27 +36,27 @@ def find_nearest_index(array, time):
 
 def get_sensor_file_path(data_dir, data_date, filename):
     """
-    Chytrá funkce pro nalezení souboru.
-    Řeší problém 'double nesting' (např. sensor/2012-01-08/2012-01-08/gps.csv).
+    Smart function for finding a file.
+    Solves the 'double nesting' problem (e.g. sensor/2012-01-08/2012-01-08/gps.csv).
     """
-    # 1. Zkusíme standardní cestu: data/sensor/DATUM/soubor
+    # 1. Try the standard path: data/sensor/DATE/file
     path1 = osp.join(data_dir, 'sensor', data_date, filename)
     if os.path.exists(path1):
         return path1
     
-    # 2. Zkusíme vnořenou cestu: data/sensor/DATUM/DATUM/soubor
+    # 2. Try the nested path: data/sensor/DATE/DATE/file
     path2 = osp.join(data_dir, 'sensor', data_date, data_date, filename)
     if os.path.exists(path2):
         return path2
         
-    # Pokud nenajdeme, vrátíme tu první (pro výpis chyby)
+    # If not found, return the first one (for error reporting)
     return path1
 
-# === ČTECÍ FUNKCE (Upravené pro robustní cesty) ===
+# === READING FUNCTIONS (Modified for robust paths) ===
 
 def read_gps(data_dir, data_date, use_rtk=False):
     filename = 'gps_rtk.csv' if use_rtk else 'gps.csv'
-    filepath = get_sensor_file_path(data_dir, data_date, filename) # <--- ZMĚNA
+    filepath = get_sensor_file_path(data_dir, data_date, filename) 
     
     if not os.path.exists(filepath):
         raise FileNotFoundError(f"GPS file not found: {filepath}")
@@ -79,7 +79,7 @@ def read_gps(data_dir, data_date, use_rtk=False):
     return gps_data
 
 def read_imu(data_dir, data_date):
-    filepath = get_sensor_file_path(data_dir, data_date, 'ms25.csv') # <--- ZMĚNA
+    filepath = get_sensor_file_path(data_dir, data_date, 'ms25.csv') 
     ms25 = np.loadtxt(filepath, delimiter=',')
     
     t = ms25[:, 0] / 1e6
@@ -93,14 +93,14 @@ def read_imu(data_dir, data_date):
     return np.vstack((t, df_ax, df_ay, rot_h)).T
 
 def read_euler(data_dir, data_date):
-    filepath = get_sensor_file_path(data_dir, data_date, 'ms25_euler.csv') # <--- ZMĚNA
+    filepath = get_sensor_file_path(data_dir, data_date, 'ms25_euler.csv') 
     euler = np.loadtxt(filepath, delimiter=',')
     t = euler[:, 0] / 1e6
     h_OG = euler[:, 3]
     return np.vstack((t, h_OG)).T
 
 def read_wheels(data_dir, data_date):
-    filepath = get_sensor_file_path(data_dir, data_date, 'wheels.csv') # <--- ZMĚNA
+    filepath = get_sensor_file_path(data_dir, data_date, 'wheels.csv') 
     wheels = np.loadtxt(filepath, delimiter=',')
     t = wheels[:, 0] / 1e6
     v_left = wheels[:, 1]
@@ -108,14 +108,14 @@ def read_wheels(data_dir, data_date):
     return np.vstack((t, v_left, v_right)).T
 
 def read_ground_truth(data_dir, data_date):
-    # GT je obvykle v rootu 'ground_truth', tam vnořování nebývá
+    # GT is usually in the 'ground_truth' root, nesting does not occur there
     filepath_gt = osp.join(data_dir, 'ground_truth', f'groundtruth_{data_date}.csv')
     
-    # Ale kovariance je v senzorech, tam vnořování být může
-    filepath_cov = get_sensor_file_path(data_dir, data_date, 'odometry_cov_100hz.csv') # <--- ZMĚNA
+    # But covariance is in sensors, where nesting may occur
+    filepath_cov = get_sensor_file_path(data_dir, data_date, 'odometry_cov_100hz.csv') 
     
     if not os.path.exists(filepath_cov):
-        # Fallback na GT časy
+        # Fallback to GT times
         gt = np.loadtxt(filepath_gt, delimiter=',')
         t = gt[:, 0] / 1e6
         x = gt[:, 1]
@@ -162,9 +162,9 @@ def preprocess_session(data_dir, data_date, use_rtk=False):
     t_end = ground_truth[-1, 0]
     t_grid = np.arange(t_start, t_end, dt)
     
-    # Seznamy pro sběr dat
-    filtered_gps_list = [] # S NaNs (Tvoje původní - pro EKF)
-    gps_filled_list = []   # <--- NOVÉ: Bez NaNs (Nearest Neighbor - pro metriku autorů)
+    # Lists for data collection
+    filtered_gps_list = [] # With NaNs (Your original - for EKF)
+    gps_filled_list = []   # <--- NEW: Without NaNs (Nearest Neighbor - for the authors' metric)
     imu_sensor_list = []
     filtered_wheel_list = []
     gt_list = []
@@ -172,7 +172,7 @@ def preprocess_session(data_dir, data_date, use_rtk=False):
     prev_gps_idx = -1
     prev_wheel_idx = -1
     
-    # Rozbalení dat pro rychlý přístup
+    # Unpacking data for fast access
     gps_t, gps_x, gps_y = gps_data[:, 0], gps_data[:, 1], gps_data[:, 2]
     imu_t, imu_ax, imu_ay, imu_w = imu_data[:, 0], imu_data[:, 1], imu_data[:, 2], imu_data[:, 3]
     eul_t, eul_h = euler_data[:, 0], euler_data[:, 1]
@@ -181,11 +181,11 @@ def preprocess_session(data_dir, data_date, use_rtk=False):
     
     x_est_init = np.array([x_true[0], y_true[0], 0, 0, theta_true[0], 0])
     
-    # Hlavní smyčka přes časovou mřížku
+    # Main loop over the time grid
     for k in range(len(t_grid)):
         curr_t = t_grid[k]
         
-        # Najdi indexy nejbližších minulých měření
+        # Find indices of the nearest past measurements
         idx_imu = find_nearest_index(imu_t, curr_t)
         idx_eul = find_nearest_index(eul_t, curr_t)
         idx_gps = find_nearest_index(gps_t, curr_t)
@@ -200,18 +200,18 @@ def preprocess_session(data_dir, data_date, use_rtk=False):
         # 1. IMU
         imu_sensor_list.append([ax, ay, theta, omega])
         
-        # 2. GPS - Dvě verze
+        # 2. GPS - Two versions
         
-        # Verze A: "Filtered" (s NaN) - pokud se index nezměnil, nemáme nová data
+        # Version A: "Filtered" (with NaN) - if the index hasn't changed, we have no new data
         if idx_gps != prev_gps_idx:
             filtered_gps_list.append([gps_x[idx_gps], gps_y[idx_gps]])
             prev_gps_idx = idx_gps
         else:
             filtered_gps_list.append([np.nan, np.nan])
 
-        # Verze B: "Authors" (Filled) - <--- NOVÉ
-        # Vždy vezmeme hodnotu na aktuálním indexu. Pokud data nepřišla,
-        # find_nearest_index vrátí stejný index jako minule -> držíme starou hodnotu.
+        # Version B: "Authors" (Filled) - <--- NEW
+        # Always take the value at the current index. If no data arrived,
+        # find_nearest_index returns the same index as before -> we keep the old value.
         gps_filled_list.append([gps_x[idx_gps], gps_y[idx_gps]])
             
         # 3. Odometrie
@@ -226,7 +226,7 @@ def preprocess_session(data_dir, data_date, use_rtk=False):
 
     processed_data = {
         'filtered_gps': torch.tensor(filtered_gps_list, dtype=torch.float32),
-        'gps': torch.tensor(gps_filled_list, dtype=torch.float32), # <--- NOVÝ KLÍČ
+        'gps': torch.tensor(gps_filled_list, dtype=torch.float32), # <--- NEW KEY
         'imu': torch.tensor(imu_sensor_list, dtype=torch.float32),
         'filtered_wheel': torch.tensor(filtered_wheel_list, dtype=torch.float32),
         'ground_truth': torch.tensor(gt_list, dtype=torch.float32),

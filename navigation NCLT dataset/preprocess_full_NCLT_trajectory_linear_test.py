@@ -8,16 +8,16 @@ import matplotlib.pyplot as plt
 # 1. KONFIGURACE
 # ==============================================================================
 SESSION_DATE = '2012-01-22'
-DT = 1.0  # Časový krok (1 Hz)
+DT = 1.0  
 
 BASE_DIR = os.getcwd()
-# Cesty si případně uprav dle své struktury
+# Adjust the paths according to your structure if needed
 GT_FILE = os.path.join(BASE_DIR, 'ground_truth', f'groundtruth_{SESSION_DATE}.csv')
 SENSOR_DIR = os.path.join(BASE_DIR, 'data', 'sensor', SESSION_DATE)
-OUTPUT_DIR = os.path.join(BASE_DIR, f'preprocessed_NCLT_FULL') # Nový výstupní adresář
+OUTPUT_DIR = os.path.join(BASE_DIR, f'preprocessed_NCLT_FULL') # New output directory
 
 def gps_to_local_coord(lat, lon):
-    """Převod Lat/Lon na lokální metry dle NCLT specifikace."""
+    """Conversion of Lat/Lon to local meters according to the NCLT specification."""
     LAT_0 = 0.738167915410646
     LON_0 = -1.46098650670922
     re = 6378135
@@ -40,7 +40,7 @@ def load_csv_as_df(path, cols=None, names=None):
         else:
             raise FileNotFoundError(f"Soubor nenalezen: {path}")
     
-    print(f"  -> Načítám: {os.path.basename(path)}")
+    print(f"  -> Loading: {os.path.basename(path)}")
     df = pd.read_csv(path, header=None, usecols=cols, names=names, 
                      on_bad_lines='skip', low_memory=False)
     for col in df.columns:
@@ -52,7 +52,7 @@ def load_csv_as_df(path, cols=None, names=None):
     return df
 
 def process_data():
-    print(f"=== ZPRACOVÁNÍ CELÉ TRAJEKTORIE {SESSION_DATE} ===")
+    print(f"=== PROCESSING ENTIRE TRAJECTORY {SESSION_DATE} ===")
     
     # 1. Ground Truth
     df_gt_raw = load_csv_as_df(GT_FILE, cols=[0, 1, 2], names=['t', 'gt_px', 'gt_py'])
@@ -101,7 +101,7 @@ def process_data():
     df_whl = reindex_and_interp(df_whl_raw, t_grid)
     df_eul = reindex_and_interp(df_eul_raw, t_grid, angular_cols=['yaw'])
 
-    # --- VÝPOČTY ---
+    # --- CALCULATIONS ---
     df = pd.concat([df_gt, df_gps, df_whl, df_eul], axis=1).dropna()
     
     df['gt_vx'] = df['gt_px'].diff() / DT
@@ -115,7 +115,7 @@ def process_data():
     cols = ['gt_px', 'gt_vx', 'gt_py', 'gt_vy', 'gps_px', 'odo_vx', 'gps_py', 'odo_vy']
     df_final = df[cols].dropna()
     
-    print(f"  -> Finální délka trajektorie: {len(df_final)} kroků")
+    print(f"  -> Final trajectory length: {len(df_final)} steps")
 
     X_np = df_final[['gt_px', 'gt_vx', 'gt_py', 'gt_vy']].values.astype(np.float32)
     Y_np = df_final[['gps_px', 'odo_vx', 'gps_py', 'odo_vy']].values.astype(np.float32)
@@ -123,18 +123,18 @@ def process_data():
     return torch.tensor(X_np), torch.tensor(Y_np)
 
 def save_full_trajectory(X, Y):
-    """Uloží celou trajektorii jako jeden dataset."""
+    """Saves the entire trajectory as a single dataset."""
     if not os.path.exists(OUTPUT_DIR):
         os.makedirs(OUTPUT_DIR)
     
-    # Ukládáme jako seznam s jedním prvkem (jedna dlouhá trajektorie)
-    # To zajistí kompatibilitu s Dataloaderem, který čeká list sekvencí
+    # We save it as a list with one element (one long trajectory)
+    # This ensures compatibility with the Dataloader, which expects a list of sequences
     full_dataset = [{'ground_truth': X, 'filtered_gps': Y}]
     
     save_path = os.path.join(OUTPUT_DIR, 'test_full_trajectory.pt')
     torch.save(full_dataset, save_path)
     
-    print(f"✅ Uložena CELÁ trajektorie do: {save_path}")
+    print(f"✅ Saved ENTIRE trajectory to: {save_path}")
 
 if __name__ == "__main__":
     try:

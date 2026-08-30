@@ -10,8 +10,8 @@ class DynamicSystem:
         self.state_dim, self.obs_dim = state_dim, obs_dim
         self.Q, self.R, self.Ex0, self.P0 = Q.to(self.device), R.to(self.device), Ex0.to(self.device), P0.to(self.device)
 
-        if f is not None and F is not None: raise ValueError("Zadejte buď `f` nebo `F`.")
-        if h is not None and H is not None: raise ValueError("Zadejte buď `h` nebo `H`.")
+        if f is not None and F is not None: raise ValueError("Enter either `f` or `F`.")
+        if h is not None and H is not None: raise ValueError("Enter either `h` or `H`.")
         
         self._f_func = f
         self._h_func = h
@@ -22,8 +22,8 @@ class DynamicSystem:
         self.is_linear_f = (self.F is not None)
         self.is_linear_h = (self.H is not None)
 
-        if not self.is_linear_f and self._f_func is None: raise ValueError("Chybí `f` nebo `F`.")
-        if not self.is_linear_h and self._h_func is None: raise ValueError("Chybí `h` nebo `H`.")
+        if not self.is_linear_f and self._f_func is None: raise ValueError("Missing `f` or `F`.")
+        if not self.is_linear_h and self._h_func is None: raise ValueError("Missing `h` or `H`.")
 
         self.noise_type = noise_type
         if self.noise_type == 'gmm':
@@ -71,7 +71,7 @@ class DynamicSystem:
             
             z = torch.randn(self.state_dim, device=self.device)
             
-            Ex0_flat = self.Ex0.squeeze() # např. z [2, 1] udělá [2]
+            Ex0_flat = self.Ex0.squeeze() # e.g. turns [2, 1] into [2]
             
             return Ex0_flat + self.L_p0 @ z
     
@@ -131,4 +131,4 @@ class DynamicSystem:
             return torch.where(is_outlier, noise_outlier, noise_normal)
         
         else:
-            raise ValueError(f"Neznámý typ šumu: '{self.noise_type}'")
+            raise ValueError(f"Unknown noise type: '{self.noise_type}'")

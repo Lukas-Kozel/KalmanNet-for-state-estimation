@@ -4,8 +4,8 @@ from scipy.stats import multivariate_normal
 
 class AuxiliaryParticleFilterTAN:
     """
-    Vektorizovaný Auxiliary Particle Filter (APF) s podporou NaN a Control Input.
-    Vhodný pro NCLT dataset.
+    Vectorized Auxiliary Particle Filter (APF) with NaN and Control Input support.
+    Suitable for the NCLT dataset.
     """
     
     def __init__(self, system_model, num_particles=1000):
@@ -23,23 +23,23 @@ class AuxiliaryParticleFilterTAN:
         
     def _compute_log_likelihood_vectorized(self, particles, z_np, R_np):
         """
-        Vrátí log(p(z|x)) pro všechny částice najednou.
+        Returns log(p(z|x)) for all particles at once.
         """
         mask = ~np.isnan(z_np)
         if not mask.any():
-            # Pokud je měření NaN, likelihood je uniformní (log(1) = 0, ale relativně je to jedno)
-            # Vracíme nuly, což znamená, že nepřidáváme žádnou informaci.
+            # If the measurement is NaN, the likelihood is uniform (log(1) = 0, but relatively it doesn't matter)
+            # We return zeros, which means we add no information.
             return np.zeros(self.N)
 
         z_valid = z_np[mask]
         R_valid = R_np[np.ix_(mask, mask)]
 
-        # Predikce měření (h)
+        # Measurement prediction (h)
         particles_torch = torch.from_numpy(particles).float().to(self.device)
         expected_measurements = self.h(particles_torch).detach().cpu().numpy()
         expected_valid = expected_measurements[:, mask]
 
-        # Výpočet Log-PDF
+        # Log-PDF computation
         try:
             log_lik = multivariate_normal.logpdf(expected_valid, mean=z_valid, cov=R_valid)
         except np.linalg.LinAlgError:
@@ -48,7 +48,7 @@ class AuxiliaryParticleFilterTAN:
         return log_lik
 
     def _normalize_log_weights(self, log_weights):
-        """Stabilní softmax: exp(log_w - max) / sum(...)"""
+        """Stable softmax: exp(log_w - max) / sum(...)"""
         max_log = np.max(log_weights)
         if np.isinf(max_log):
             return np.full(self.N, 1.0 / self.N)
@@ -58,7 +58,7 @@ class AuxiliaryParticleFilterTAN:
         return weights
 
     def _systematic_resample(self, weights):
-        """Vrací indexy rodičů."""
+        """Returns parent indices."""
         N = len(weights)
         positions = (np.arange(N) + np.random.uniform(0, 1)) / N
         indexes = np.zeros(N, 'i')
@@ -73,23 +73,23 @@ class AuxiliaryParticleFilterTAN:
         return indexes
 
     def get_estimate(self, particles, weights):
-        # 1. Klasický výpočet mean
+        # 1. Classic mean computation
         mean = np.average(particles, weights=weights, axis=0)
         
-        # 2. Výpočet kovariance
+        # 2. Covariance computation
         diff = particles - mean
         cov = (diff * weights[:, np.newaxis]).T @ diff
         
-        # === OPRAVA ANEES: Regularizace Kovariance ===
-        # Problém: U PF se stává, že všechny částice jsou identické (sample impoverishment),
-        # pak je cov = 0. ANEES dělí nulou -> vybuchne.
-        # Řešení: Přičteme malou "safety" diagonálu. 
-        # Hodnota 1e-3 znamená, že si jsme jistí maximálně na milimetry, ne více.
+        
+        # Problem: With PF it happens that all particles become identical (sample impoverishment),
+        # then cov = 0. ANEES divides by zero -> blows up.
+        # Solution: Add a small "safety" diagonal. 
+        # A value of 1e-3 means we are certain at most to millimeters, no more.
         
         min_cov_val = 1e-3 
         cov = cov + np.eye(self.state_dim) * min_cov_val
         
-        # Převod na torch
+        # Conversion to torch
         mean_torch = torch.from_numpy(mean).float().to(self.device)
         cov_torch = torch.from_numpy(cov).float().to(self.device)
         
@@ -108,12 +108,12 @@ class AuxiliaryParticleFilterTAN:
         P_filtered_history = torch.zeros(seq_len, self.state_dim, self.state_dim, device=self.device)
         
         # Inicializace
-        # Poznámka: APF v kroku k potřebuje váhy z kroku k-1.
+        
         current_particles = np.random.multivariate_normal(Ex0_np, P0_np, size=self.N)
-        # Váhy držíme v lineárním prostoru, protože resampling je potřebuje lineární
+        # We keep weights in linear space because resampling needs them linear
         current_weights = np.full(self.N, 1.0 / self.N)
         
-        # Uložení počátečního stavu
+        # Storing the initial state
         x_est, P_est = self.get_estimate(current_particles, current_weights)
         x_filtered_history[0] = x_est.squeeze()
         P_filtered_history[0] = P_est
@@ -123,9 +123,9 @@ class AuxiliaryParticleFilterTAN:
             y_k = y_seq_np[k]
             is_measurement_valid = not np.all(np.isnan(y_k))
 
-            # --- APF FÁZE 1: Lookahead & Auxiliary Weights ---
+            # --- APF PHASE 1: Lookahead & Auxiliary Weights ---
             
-            # 1. Deterministická predikce průměru (mu) pro všechny částice
+            # 1. Deterministic prediction of the mean (mu) for all particles
             # mu_k^i = f(x_{k-1}^i, u_k)
             parts_torch = torch.from_numpy(current_particles).float().to(self.device)
             if u_k is not None:
@@ -136,9 +136,9 @@ class AuxiliaryParticleFilterTAN:
             
             mu_particles = mu_particles_torch.detach().cpu().numpy()
 
-            # 2. Výpočet pomocných vah
-            # Pokud máme měření: log_w_aux = log(w_{k-1}) + log p(y_k | mu_k)
-            # Pokud nemáme měření: log_w_aux = log(w_{k-1})  (žádná nová info)
+            # 2. Computation of auxiliary weights
+            # If we have a measurement: log_w_aux = log(w_{k-1}) + log p(y_k | mu_k)
+            # If we have no measurement: log_w_aux = log(w_{k-1})  (no new info)
             
             log_weights_prev = np.log(current_weights + 1e-300)
             
@@ -146,26 +146,26 @@ class AuxiliaryParticleFilterTAN:
                 log_lik_aux = self._compute_log_likelihood_vectorized(mu_particles, y_k, self.R_np)
                 log_weights_aux = log_weights_prev + log_lik_aux
             else:
-                # Pokud není měření, pomocná váha je jen původní váha
+                # If there is no measurement, the auxiliary weight is just the original weight
                 log_weights_aux = log_weights_prev
                 
             # Normalizace pro resampling
             weights_aux = self._normalize_log_weights(log_weights_aux)
 
-            # --- APF FÁZE 2: Resampling ---
-            # Vybereme indexy "nadějných" částic
+            # --- APF PHASE 2: Resampling ---
+            # Select indices of "promising" particles
             parent_indices = self._systematic_resample(weights_aux)
             
-            # Vybereme rodičovské částice
+            # Select parent particles
             parents = current_particles[parent_indices]
             
-            # --- APF FÁZE 3: Finální propagace ---
+            # --- APF PHASE 3: Final propagation ---
             # x_k^j ~ N(f(parents^j, u_k), Q)
-            # Musíme znovu prohnat modelem f() ty VYBRANÉ rodiče (vektorizovaně)
+            # We must run the SELECTED parents through the model f() again (vectorized)
             
             parents_torch = torch.from_numpy(parents).float().to(self.device)
             if u_k is not None:
-                # u_torch už máme, jen zkontrolujeme shape
+                # We already have u_torch, just check the shape
                 u_torch = torch.from_numpy(u_k).float().to(self.device).reshape(1, -1).repeat(self.N, 1)
                 pred_parents_torch = self.f(parents_torch, u_torch)
             else:
@@ -173,35 +173,35 @@ class AuxiliaryParticleFilterTAN:
                 
             pred_parents = pred_parents_torch.detach().cpu().numpy()
             
-            # Přidání šumu Q
+            # Adding noise Q
             noise = np.random.multivariate_normal(np.zeros(self.state_dim), self.Q_np, size=self.N)
             current_particles = pred_parents + noise
 
-            # --- APF FÁZE 4: Korekce vah ---
-            # Váha w_k^j = p(y_k | x_k^j) / p(y_k | mu_{parent})
+            # --- APF PHASE 4: Weight correction ---
+            # Weight w_k^j = p(y_k | x_k^j) / p(y_k | mu_{parent})
             # V logaritmech: log_w_new = log_lik_final - log_lik_aux_parent
             
             if is_measurement_valid:
-                # 1. Likelihood finálních částic
+                # 1. Likelihood of the final particles
                 log_lik_final = self._compute_log_likelihood_vectorized(current_particles, y_k, self.R_np)
                 
-                # 2. Likelihood rodičů (ten už máme z Fáze 1, jen musíme vzít správné indexy)
+                # 2. Likelihood of the parents (we already have it from Phase 1, we just need to take the correct indices)
                 log_lik_aux_parents = log_lik_aux[parent_indices]
                 
-                # 3. Výpočet váhy (korekce biasu zavedeného resamplingem v kroku 2)
+                
                 log_weights_new = log_lik_final - log_lik_aux_parents
                 
-                # Ošetření: Vzhledem k šumu Q se může stát, že x_k je 'mimo', zatímco mu_k bylo 'ok'
-                # nebo naopak. APF váhy by měly být kolem 1.0 (log 0).
+                # Handling: Due to noise Q, it may happen that x_k is 'out' while mu_k was 'ok'
+                # or vice versa. APF weights should be around 1.0 (log 0).
             else:
-                # Pokud nemáme měření, váhy jsou uniformní (1/N)
-                # Protože jsme provedli resampling podle w_{k-1}, částice jsou již distribuovány
-                # podle posterioru z minula. Nyní jen difundují šumem Q.
+                # If we have no measurement, the weights are uniform (1/N)
+                # Because we resampled according to w_{k-1}, the particles are already distributed
+                # according to the posterior from the past. Now they only diffuse with noise Q.
                 log_weights_new = np.zeros(self.N) # log(1) = 0, po normalizaci to bude 1/N
 
             current_weights = self._normalize_log_weights(log_weights_new)
             
-            # Odhad a uložení
+            # Estimate and save
             x_est, P_est = self.get_estimate(current_particles, current_weights)
             x_filtered_history[k] = x_est.squeeze()
             P_filtered_history[k] = P_est

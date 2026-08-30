@@ -3,19 +3,19 @@ import torch
 class UnscentedKalmanFilterNCLT:
     def __init__(self, system_model, alpha=0.1, beta=2.0, kappa=0.0):
         """
-        Robustní UKF pro NCLT s podporou vstupu u (control) a NaN měření.
+        Robust UKF for NCLT with support for control input u and NaN measurements.
         
         Args:
-            alpha: Rozptyl sigma bodů (0.1 - 1.0 je ok pro float32)
-            beta: Parametr pro prior (2.0 je optimální pro Gaussovské rozdělení)
-            kappa: Sekundární škálovací parametr (obvykle 0 nebo 3-n)
+            alpha: Spread of sigma points (0.1 - 1.0 is fine for float32)
+            beta: Parameter for prior (2.0 is optimal for Gaussian distribution)
+            kappa: Secondary scaling parameter (usually 0 or 3-n)
         """
         self.device = system_model.Q.device
         
         self.system = system_model
-        # f: (x, u) -> x_next (Musí umět zpracovat batch sigma bodů!)
+        # f: (x, u) -> x_next (Must be able to process a batch of sigma points!)
         self.f = system_model.f
-        # h: (x) -> y (Musí umět zpracovat batch sigma bodů!)
+        # h: (x) -> y (Must be able to process a batch of sigma points!)
         self.h = system_model.h
         
         self.Q = system_model.Q.clone().detach().to(self.device)
@@ -24,7 +24,7 @@ class UnscentedKalmanFilterNCLT:
         self.state_dim = self.Q.shape[0]
         self.obs_dim = self.R.shape[0]
         
-        # --- Nastavení parametrů Sigma bodů ---
+        # --- Setting up Sigma point parameters ---
         self.alpha = alpha
         self.beta = beta
         self.kappa = kappa
@@ -32,15 +32,15 @@ class UnscentedKalmanFilterNCLT:
         self.lam = self.alpha**2 * (self.state_dim + self.kappa) - self.state_dim
         self.n_sigma_points = 2 * self.state_dim + 1
         
-        # Váhy (W_mean a W_cov)
+        # Weights (W_mean and W_cov)
         self.Wm = torch.full((self.n_sigma_points,), 0.5 / (self.state_dim + self.lam), device=self.device)
         self.Wc = self.Wm.clone()
         
-        # První váha je speciální
+        # The first weight is special
         self.Wm[0] = self.lam / (self.state_dim + self.lam)
         self.Wc[0] = self.lam / (self.state_dim + self.lam) + (1 - self.alpha**2 + self.beta)
 
-        # Interní stavy
+        # Internal states
         self.x_predict_current = None
         self.P_predict_current = None
         
@@ -52,20 +52,20 @@ class UnscentedKalmanFilterNCLT:
         self.P_predict_current = P0.clone().detach()
 
     def _ensure_positive_definite(self, P):
-        """Vynutí symetrii a PD vlastnost matice P."""
+        """Enforces symmetry and PD property of matrix P."""
         P = 0.5 * (P + P.transpose(-1, -2))
         jitter = 1e-6 * torch.eye(self.state_dim, device=self.device)
         return P + jitter
 
     def _get_sigma_points(self, x, P):
-        """Generování sigma bodů pomocí Choleského rozkladu."""
+        """Generation of sigma points using Cholesky decomposition."""
         # Pojistka pro stabilitu
         P = self._ensure_positive_definite(P)
         
         try:
             L = torch.linalg.cholesky(P)
         except torch.linalg.LinAlgError:
-            # Fallback: Eigendecomposition pokud Cholesky selže
+            # Fallback: Eigendecomposition if Cholesky fails
             eigvals, eigvecs = torch.linalg.eigh(P)
             eigvals = torch.clamp(eigvals, min=1e-8)
             L = eigvecs @ torch.diag(torch.sqrt(eigvals)) @ eigvecs.T
@@ -85,28 +85,28 @@ class UnscentedKalmanFilterNCLT:
         """
         Krok predikce (Time Update).
         """
-        # 1. Generování Sigma bodů
+        # 1. Generation of Sigma points
         sigma_points = self._get_sigma_points(x_curr, P_curr)
         
-        # 2. Propagace bodů přes nelineární funkci f(x, u)
+        # 2. Propagation of points through the nonlinear function f(x, u)
         if u_curr is not None:
             # Vstup u [Input_dim] -> [1, Input_dim] -> repeat -> [2n+1, Input_dim]
-            # Tím zajistíme, že f() dostane správný tvar pro batch processing
+            # This ensures that f() receives the correct shape for batch processing
             u_batch = u_curr.reshape(1, -1).repeat(self.n_sigma_points, 1)
             propagated_sigmas = self.f(sigma_points, u_batch)
         else:
             propagated_sigmas = self.f(sigma_points, None)
             
-        # 3. Výpočet apriorního průměru x_pred
-        # Vážený součet sigma bodů
+        # 3. Computation of the a priori mean x_pred
+        # Weighted sum of sigma points
         x_pred = torch.sum(self.Wm.unsqueeze(1) * propagated_sigmas, dim=0).reshape(self.state_dim, 1)
         
-        # 4. Výpočet apriorní kovariance P_pred
+        # 4. Computation of the a priori covariance P_pred
         diff = propagated_sigmas - x_pred.T
         
-        # POZNÁMKA: Zde by teoreticky mělo být ošetření úhlů (wrap_to_pi) pro rozdíly stavů,
-        # pokud sys_model obsahuje úhly (theta). Standardní odčítání může udělat chybu kolem +/- PI.
-        # Pro NCLT to obvykle projde, pokud se auto netočí extrémně rychle v jednom kroku.
+        
+        # if sys_model contains angles (theta). Standard subtraction can make an error around +/- PI.
+        
         
         P_pred = diff.T @ (torch.diag(self.Wc) @ diff) + self.Q
         P_pred = self._ensure_positive_definite(P_pred)
@@ -115,36 +115,36 @@ class UnscentedKalmanFilterNCLT:
 
     def update_step(self, x_pred, P_pred, y_meas):
         """
-        Krok korekce (Measurement Update).
-        Obsahuje NaN handling identický s EKF.
+        Correction step (Measurement Update).
+        Contains NaN handling identical to the EKF.
         """
-        # === HANDLING NaN (Výpadek GPS) ===
+        # === NaN HANDLING (GPS outage) ===
         if torch.any(torch.isnan(y_meas)):
-            # Vracíme predikci beze změny (Skip Update)
-            # Nulová inovace a gain pro logování
+            # We return the prediction unchanged (Skip Update)
+            # Zero innovation and gain for logging
             return x_pred, P_pred, torch.zeros(self.state_dim, self.obs_dim, device=self.device), torch.zeros(self.obs_dim, device=self.device)
 
         y_meas = y_meas.reshape(self.obs_dim, 1)
 
         # 1. Znovu generujeme sigma body (z predikce)
-        # Některé varianty UKF používají staré body, ale standard je generovat nové z P_pred
+        # Some UKF variants reuse old points, but the standard is to generate new ones from P_pred
         sigma_points = self._get_sigma_points(x_pred, P_pred)
         
-        # 2. Transformace sigma bodů do prostoru měření h(x)
+        # 2. Transformation of sigma points into the measurement space h(x)
         meas_sigmas = self.h(sigma_points)
         
-        # 3. Odhad měření y_hat (Vážený průměr)
+        # 3. Measurement estimate y_hat (Weighted mean)
         y_hat = torch.sum(self.Wm.unsqueeze(1) * meas_sigmas, dim=0).reshape(self.obs_dim, 1)
         
-        # 4. Kovariance měření (S) a křížová kovariance (P_xy)
+        # 4. Measurement covariance (S) and cross-covariance (P_xy)
         y_diff = meas_sigmas - y_hat.T
         x_diff = sigma_points - x_pred.T
         
         S = y_diff.T @ (torch.diag(self.Wc) @ y_diff) + self.R
         P_xy = x_diff.T @ (torch.diag(self.Wc) @ y_diff)
         
-        # 5. Výpočet Kalman Gain a Update
-        # Používáme pinv pro stabilitu
+        # 5. Kalman Gain computation and Update
+        # We use pinv for stability
         K = P_xy @ torch.linalg.pinv(S)
         
         innovation = y_meas - y_hat
@@ -158,8 +158,8 @@ class UnscentedKalmanFilterNCLT:
 
     def process_sequence(self, y_seq, u_seq=None, Ex0=None, P0=None):
         """
-        Dávkové zpracování celé trajektorie.
-        Struktura: Loop { Update -> Save -> Predict }
+        Batch processing of the entire trajectory.
+        Structure: Loop { Update -> Save -> Predict }
         """
         seq_len = y_seq.shape[0]
         
@@ -167,7 +167,7 @@ class UnscentedKalmanFilterNCLT:
         P_hist = torch.zeros(seq_len, self.state_dim, self.state_dim, device=self.device)
         
         # Inicializace
-        # Pokud nebylo zadáno Ex0, použijeme interní stav z minula (nebo reset)
+        # If Ex0 was not provided, use the internal state from before (or reset)
         if Ex0 is not None:
             x_curr = Ex0.clone().detach().reshape(self.state_dim, 1)
             P_curr = P0.clone().detach()
@@ -177,16 +177,16 @@ class UnscentedKalmanFilterNCLT:
         
         for k in range(seq_len):
             # --- 1. UPDATE STEP (Korekce) ---
-            # Zkusíme opravit aktuální stav měřením (pokud není NaN)
+            # Try to correct the current state with the measurement (if not NaN)
             x_upd, P_upd, _, _ = self.update_step(x_curr, P_curr, y_seq[k])
             
-            # Uložíme výsledek (Posterior)
+            # Save the result (Posterior)
             x_hist[k] = x_upd.squeeze()
             P_hist[k] = P_upd
             
             # --- 2. PREDICT STEP (Posun do budoucna) ---
             if k < seq_len - 1:
-                # Načtení vstupu u pro tento krok
+                
                 u_k = u_seq[k] if u_seq is not None else None
                 
                 # Predikce x_{k+1|k}

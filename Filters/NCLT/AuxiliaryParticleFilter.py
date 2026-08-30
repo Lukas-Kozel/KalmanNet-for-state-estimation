@@ -4,12 +4,12 @@ from tqdm import tqdm
 
 class AuxiliaryParticleFilterNCLT:
     """
-    Extrémně rychlá (GPU Vectorized) verze Adaptive Auxiliary Particle Filter (AAPF).
+    Extremely fast (GPU Vectorized) version of the Adaptive Auxiliary Particle Filter (AAPF).
     
-    Klíčové optimalizace:
-    1. Předpočítané Choleskyho rozklady pro okamžité generování procesního šumu.
-    2. Mahalanobisova vzdálenost místo pomalých objektů torch.distributions.
-    3. Plná vektorizace resampling fáze.
+    Key optimizations:
+    1. Precomputed Cholesky decompositions for instant process noise generation.
+    2. Mahalanobis distance instead of slow torch.distributions objects.
+    3. Full vectorization of the resampling phase.
     """
     
     def __init__(self, system_model, num_particles=2000, jitter_strength=2.0, r_inflation=20.0, resample_threshold=0.5):
@@ -31,17 +31,17 @@ class AuxiliaryParticleFilterNCLT:
         self.Q = system_model.Q.clone().detach().to(self.device)
         self.R = system_model.R.clone().detach().to(self.device)
         
-        # Záchranná brzda pro kovarianci
+        # Safety brake for covariance
         self.min_cov_matrix = torch.diag(torch.diag(self.Q)) * 0.01
 
-        # --- OPTIMALIZACE PRO EXTRÉMNÍ RYCHLOST ---
-        # 1. Předpočítaný Cholesky pro procesní šum Q
+        # --- OPTIMIZATION FOR EXTREME SPEED ---
+        # 1. Precomputed Cholesky for process noise Q
         try:
             self.L_Q = torch.linalg.cholesky(self.Q)
         except RuntimeError:
             self.L_Q = torch.linalg.cholesky(self.Q + torch.eye(self.state_dim, device=self.device)*1e-6)
 
-        # 2. Předpočítaná inverze pro nafouknuté R (r_inflation)
+        # 2. Precomputed inverse for inflated R (r_inflation)
         self.inflated_R = self.R * self.r_inflation
         try:
             L_R_inf = torch.linalg.cholesky(self.inflated_R)
@@ -49,20 +49,20 @@ class AuxiliaryParticleFilterNCLT:
         except RuntimeError:
             self.inv_inflated_R = torch.inverse(self.inflated_R)
 
-        # 3. Distribuce pouze pro krok k=0
+        
         self.dist_init = torch.distributions.MultivariateNormal(self.Ex0, self.P0)
 
         print(f"Initialized FAST Adaptive APF: N={self.N}, Jitter={self.jitter_strength}, R-Infl={self.r_inflation}, ResThr={self.resample_threshold}")
 
     def _sample_process_noise(self):
-        """Bleskové vzorkování procesního šumu Q."""
+        """Lightning-fast sampling of process noise Q."""
         standard_noise = torch.randn(self.N, self.state_dim, device=self.device)
         return standard_noise @ self.L_Q.T
 
     def _compute_log_likelihood_vectorized(self, particles, z):
         """
-        Extrémně rychlý výpočet log-likelihood pomocí Mahalanobisovy vzdálenosti.
-        Zpracovává pouze validní (ne-NaN) dimenze měření.
+        Extremely fast log-likelihood computation using Mahalanobis distance.
+        Handles only valid (non-NaN) measurement dimensions.
         """
         mask = ~torch.isnan(z)
         if not mask.any():
@@ -70,8 +70,8 @@ class AuxiliaryParticleFilterNCLT:
             
         z_valid = z[mask]
         
-        # Výběr validní sub-matice z předpočítané inverze
-        # V PyTorch to elegantně řeší dvojité maskování
+        # Selection of valid sub-matrix from the precomputed inverse
+        # In PyTorch this is elegantly solved by double masking
         inv_R_valid = self.inv_inflated_R[mask][:, mask]
         
         expected_z = self.h(particles) # (N, obs_dim)
@@ -83,11 +83,11 @@ class AuxiliaryParticleFilterNCLT:
         term1 = residuals @ inv_R_valid
         mahalanobis = (term1 * residuals).sum(dim=1) # (N,)
         
-        # Log likelihood je úměrná -0.5 * Mahalanobis
+        # Log likelihood is proportional to -0.5 * Mahalanobis
         return -0.5 * mahalanobis
 
     def _normalize_log_weights(self, log_weights):
-        """Stabilní Log-Sum-Exp normalizace vah."""
+        """Stable Log-Sum-Exp normalization of weights."""
         max_log = torch.max(log_weights)
         if torch.isinf(max_log):
             return torch.full((self.N,), 1.0 / self.N, device=self.device)
@@ -101,7 +101,7 @@ class AuxiliaryParticleFilterNCLT:
         return weights_unnorm / sum_w
 
     def _systematic_resample(self, weights):
-        """Plně vektorizovaný Systematic Resampling bez .item() bariéry."""
+        """Fully vectorized Systematic Resampling without .item() barrier."""
         cumsum = torch.cumsum(weights, dim=0)
         cumsum[-1] = 1.0  
         
@@ -113,7 +113,7 @@ class AuxiliaryParticleFilterNCLT:
         return torch.clamp(indexes, 0, self.N - 1)
 
     def get_estimate(self, particles, weights):
-        """Vrátí vážený průměr a kovarianci s minimální bezpečnostní podlahou."""
+        """Returns weighted mean and covariance with a minimal safety floor."""
         mean = torch.sum(particles * weights.unsqueeze(1), dim=0)
         diff = particles - mean
         cov = (diff.T * weights) @ diff
@@ -121,9 +121,9 @@ class AuxiliaryParticleFilterNCLT:
         return mean.reshape(self.state_dim, 1), cov
 
     def apply_jitter(self, particles):
-        """Direct Roughening bleskově."""
+        """Direct Roughening at lightning speed."""
         if self.jitter_strength > 0:
-            noise = self._sample_process_noise() # Znovupoužití rychlého generátoru
+            noise = self._sample_process_noise() # Reuse of the fast generator
             return particles + noise * self.jitter_strength
         return particles
 
@@ -153,7 +153,7 @@ class AuxiliaryParticleFilterNCLT:
         x_filtered_history[0] = x_est.squeeze()
         P_filtered_history[0] = P_est
 
-        # Cache pro batch vstupu u_k, aby se neexpandoval zbytečně uvnitř if-else větví
+        # Cache for batch input u_k so it is not expanded unnecessarily inside if-else branches
         u_batch_cache = None
 
         with torch.no_grad():
@@ -162,7 +162,7 @@ class AuxiliaryParticleFilterNCLT:
                 u_k = u_sequence[k] if u_sequence is not None else None
                 y_k = y_seq[k]
                 
-                # Příprava batche pro vstupní vektor
+                # Preparing the batch for the input vector
                 if u_k is not None:
                     u_batch_cache = u_k.unsqueeze(0).expand(self.N, -1)
                 else:
@@ -172,7 +172,7 @@ class AuxiliaryParticleFilterNCLT:
 
                 if not is_measurement_valid:
                     # ==============================
-                    # A. OUTAGE MODE (Výpadek GPS)
+                    # A. OUTAGE MODE (GPS outage)
                     # ==============================
                     if u_batch_cache is not None:
                         pred_particles = self.f(current_particles, u_batch_cache)
@@ -189,7 +189,7 @@ class AuxiliaryParticleFilterNCLT:
                     n_eff = 1.0 / torch.sum(current_weights ** 2)
                     
                     if n_eff < (self.N * self.resample_threshold):
-                        # --- B1. APF UPDATE (Resampling nutný) ---
+                        # --- B1. APF UPDATE (Resampling required) ---
                         
                         # 1. Lookahead (mu)
                         if u_batch_cache is not None:
@@ -204,10 +204,10 @@ class AuxiliaryParticleFilterNCLT:
                         log_weights_aux = log_weights_prev + log_lik_aux
                         weights_aux = self._normalize_log_weights(log_weights_aux)
                         
-                        # 3. Resampling indexů
+                        # 3. Resampling indices
                         parent_indices = self._systematic_resample(weights_aux)
                         
-                        # 4. Propagace přeživších rodičů (s využitím indexovaných rodičů)
+                        # 4. Propagation of surviving parents (using indexed parents)
                         parents = current_particles[parent_indices]
                         if u_batch_cache is not None:
                             pred_parents = self.f(parents, u_batch_cache)
@@ -225,7 +225,7 @@ class AuxiliaryParticleFilterNCLT:
                         current_weights = self._normalize_log_weights(log_weights_new)
                         
                     else:
-                        # --- B2. SIS UPDATE (Resampling není nutný) ---
+                        # --- B2. SIS UPDATE (Resampling not necessary) ---
                         if u_batch_cache is not None:
                             pred_particles = self.f(current_particles, u_batch_cache)
                         else:

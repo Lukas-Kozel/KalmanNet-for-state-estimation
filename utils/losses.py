@@ -2,7 +2,7 @@ import torch
 import torch.nn.functional as F
 
 def gaussian_nll_loss_with_alpha(target, predicted_mean, predicted_var_diag, alpha=1.0):
-    """ Vypočítá Gaussian Negative Log Likelihood. """
+    """ Computes the Gaussian Negative Log Likelihood. """
     predicted_var_diag = predicted_var_diag + 1e-12
     
     log_det_cov = torch.sum(torch.log(predicted_var_diag), dim=-1)
@@ -28,19 +28,19 @@ import torch
 import math
 
 def gaussian_nll_safe(target, preds, var, min_var=1e-6, max_error_cap=100.0):
-    # 1. Pouze technické epsilon proti dělení nulou (necháme gradienty protékat)
+    # 1. Only a technical epsilon against division by zero (let gradients flow through)
     var = var + min_var 
     
-    # 2. Výpočet kvadratické chyby
+    # 2. Calculation of the quadratic error
     error_sq = (preds - target) ** 2
     
-    # 3. Mahalanobis distance (chyba vážená nejistotou)
+    
     mahalanobis = error_sq / var
     
     # === ZDE JE TA MAGIE ===
-    # Místo clampování variance clampujeme AŽ VÝSLEDEK dělení.
-    # Tím říkáme: "Trest za chybu může být maximálně 100."
-    # To zabrání explozi Loss (3000+), ale zachová směr gradientu "zvyš varianci".
+    # Instead of clamping the variance, we clamp ONLY THE RESULT of the division.
+    # This says: "The penalty for an error can be at most 100."
+    # This prevents the Loss from exploding (3000+), but preserves the gradient direction "increase variance".
     mahalanobis_clamped = torch.clamp(mahalanobis, max=max_error_cap)
     
     # 4. NLL = log(var) + mahalanobis

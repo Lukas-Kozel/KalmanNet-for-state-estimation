@@ -45,7 +45,7 @@ class BayesianKalmanNet(nn.Module):
         x_filtered_trajectory = []
         P_filtered_trajectory = []
 
-        # Seznam pro sběr regularizačních členů z celé sekvence
+        # List for collecting regularization terms from the entire sequence
         regularization_trajectory = []
 
         for t in range(seq_len):

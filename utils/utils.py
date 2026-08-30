@@ -66,20 +66,20 @@ import torch
 
 def calculate_anees_vectorized(x_true, x_hat, P_hat, eps=1e-6):
     """
-    Robustní výpočet ANEES pomocí Pseudo-Inverze.
-    Zvládá i situaci, kdy J_samples < State_Dim (singulární matice).
+    Robust ANEES computation using Pseudo-Inverse.
+    Handles even the case where J_samples < State_Dim (singular matrix).
     """
-    # 1. Zploštění (Flattening)
+    # 1. Flattening
     if x_true.dim() == 3: x_true = x_true.reshape(-1, x_true.shape[-1])
     if x_hat.dim() == 3: x_hat = x_hat.reshape(-1, x_hat.shape[-1])
     if P_hat.dim() == 4: P_hat = P_hat.reshape(-1, P_hat.shape[-2], P_hat.shape[-1])
 
-    # 2. Výpočet chyby
+    # 2. Error computation
     error = (x_true - x_hat).unsqueeze(-1)  # [N, Dim, 1]
     
     # 3. Pseudo-Inverze matice P
-    # pinv je mnohem stabilnější pro Low-Rank matice (když máme málo vzorků)
-    # hermitian=True říká, že matice je symetrická (což kovariance je)
+    # pinv is much more stable for Low-Rank matrices (when we have few samples)
+    # hermitian=True states that the matrix is symmetric (which a covariance is)
     P_inv = torch.linalg.pinv(P_hat, hermitian=True)
     
     # 4. ANEES = error^T * P_inv * error
@@ -89,7 +89,7 @@ def calculate_anees_vectorized(x_true, x_hat, P_hat, eps=1e-6):
     temp = torch.bmm(error.transpose(1, 2), P_inv)
     anees_per_sample = torch.bmm(temp, error).squeeze() # [N]
     
-    # Ochrana proti numerickým artefaktům (malinká záporná čísla jako -1e-10)
+    # Protection against numerical artifacts (tiny negative numbers like -1e-10)
     anees_per_sample = torch.clamp(anees_per_sample, min=0.0)
 
     return anees_per_sample.mean().item()
@@ -249,11 +249,11 @@ def calculate_anees(x_true_list, x_hat_list, P_hat_list):
 def generate_data_for_map_safe(system, num_trajectories, seq_len, force_initial_state_zero=False):
     device = system.Ex0.device
     
-    # --- BEZPEČNOSTNÍ LIMITY ---
-    HARD_CLAMP_VELOCITY = 20.0  # Fyzikální limit simulace (aby to neexplodovalo)
-    SAFE_VELOCITY_LIMIT = 20.0  # Limit pro dataset (chceme jen "slušné" trajektorie)
-    MAX_HEIGHT_JUMP = 15.0     # Maximální změna výšky v jednom kroku (metry)
-    MAP_MARGIN = 50.0           # Minimální vzdálenost od kraje mapy (metry)
+    # --- SAFETY LIMITS ---
+    HARD_CLAMP_VELOCITY = 20.0  # Physical limit of the simulation (so it doesn't explode)
+    SAFE_VELOCITY_LIMIT = 20.0  # Limit for the dataset (we only want "decent" trajectories)
+    MAX_HEIGHT_JUMP = 15.0     
+    MAP_MARGIN = 50.0           # Minimum distance from the map edge (meters)
     
     # Hranice mapy s rezervou
     safe_min_x = system.min_x + MAP_MARGIN
@@ -271,13 +271,13 @@ def generate_data_for_map_safe(system, num_trajectories, seq_len, force_initial_
     generated_count = 0
     total_attempts = 0
     
-    # Vypočítáme interval pro logování bezpečně (min 1)
+    # Compute the logging interval safely (min 1)
     log_interval = max(1, num_trajectories // 10)
 
     while generated_count < num_trajectories:
         total_attempts += 1
         
-        # Pomocné buffery pro jednu trajektorii
+        # Auxiliary buffers for one trajectory
         temp_x_traj = torch.zeros(seq_len, system.state_dim, device=device)
         temp_y_traj = torch.zeros(seq_len, system.obs_dim, device=device)
         
@@ -286,20 +286,20 @@ def generate_data_for_map_safe(system, num_trajectories, seq_len, force_initial_
             x_current = torch.tensor([[0.0, 0.0, 0.0, 0.0]], device=device)
         else:
             x_current = system.get_deterministic_initial_state().view(1, -1)
-            # Přidáme trochu náhody, aby každá trajektorie nebyla stejná
+            # Add a bit of randomness so each trajectory is not the same
             x_current += torch.randn_like(x_current) * 0.1 
 
-        # Kontrola startu (musí být bezpečně uvnitř mapy)
+        # Start check (must be safely inside the map)
         if not (safe_min_x <= x_current[0,0] <= safe_max_x and safe_min_y <= x_current[0,1] <= safe_max_y):
             continue # Zkusit znovu
 
         trajectory_is_valid = True
         
         for t in range(seq_len):
-            # A) Uložení stavu
+            # A) Saving the state
             temp_x_traj[t, :] = x_current.squeeze()
             
-            # B) Měření
+            # B) Measurement
             try:
                 y_current = system.measure(x_current)
                 temp_y_traj[t, :] = y_current.squeeze()
@@ -307,8 +307,8 @@ def generate_data_for_map_safe(system, num_trajectories, seq_len, force_initial_
                 trajectory_is_valid = False
                 break
             
-            # --- FILTR 1: SKOKY V TERÉNU ---
-            # Pokud se výška změnila o víc než X metrů za 1 sekundu, je to "divný" terén
+            # --- FILTER 1: JUMPS IN TERRAIN ---
+            # If the height changed by more than X meters in 1 second, the terrain is "weird"
             if t > 0:
                 h_diff = abs(temp_y_traj[t, 0] - temp_y_traj[t-1, 0])
                 if h_diff > MAX_HEIGHT_JUMP:
@@ -316,7 +316,7 @@ def generate_data_for_map_safe(system, num_trajectories, seq_len, force_initial_
                     print(f"Discarding: Terrain jump {h_diff:.2f}m at step {t}")
                     break
 
-            # C) Krok dynamiky
+            
             try:
                 x_current = system.step(x_current)
                 
@@ -342,13 +342,13 @@ def generate_data_for_map_safe(system, num_trajectories, seq_len, force_initial_
                 print(f"Discarding: High velocity {vx:.1f}, {vy:.1f}")
                 break
 
-        # Pokud trajektorie přežila všechny kontroly, uložíme ji
+        # If the trajectory survived all checks, we save it
         if trajectory_is_valid:
             x_data[generated_count, :, :] = temp_x_traj
             y_data[generated_count, :, :] = temp_y_traj
             generated_count += 1
             
-            # Zde používáme bezpečný interval
+            # Here we use the safe interval
             if generated_count % log_interval == 0:
                 print(f"  Generated {generated_count}/{num_trajectories} (Efficiency: {generated_count/total_attempts:.1%})")
 
@@ -360,25 +360,25 @@ import matplotlib.pyplot as plt
 
 def save_plot_eps(filename, folder_name=""):
     """
-    Uloží aktuální matplotlib graf jako vektorový .eps soubor.
+    Saves the current matplotlib figure as a vector .eps file.
     
-    Parametry:
-    filename (str): Název souboru (bez přípony .eps)
-    folder_name (str): Název cílové složky
+    Parameters:
+    filename (str): File name (without the .eps extension)
+    folder_name (str): Name of the target folder
     """
-    # Vytvoření složky, pokud neexistuje (na stejné adresářové úrovni)
+    # Create the folder if it does not exist (at the same directory level)
     os.makedirs(folder_name, exist_ok=True)
     
-    # Sestavení absolutní cesty k souboru
+    # Build the absolute path to the file
     filepath = os.path.join(folder_name, f"{filename}.eps")
     
-    # Uložení grafu 
-    # bbox_inches='tight' je klíčové - zabrání oříznutí legendy ležící mimo osu
+    # Save the figure 
+    # bbox_inches='tight' is key - it prevents cropping of the legend lying outside the axis
     plt.savefig(filepath, format='eps', bbox_inches='tight')
-    print(f"--> Graf byl úspěšně uložen jako vektor: {filepath}")
+    print(f"--> Figure was successfully saved as vector: {filepath}")
 
 def save_plot_pdf(filename, folder_name=""):
     os.makedirs(folder_name, exist_ok=True)
     filepath = os.path.join(folder_name, f"{filename}.pdf")
     plt.savefig(filepath, format='pdf', bbox_inches='tight')
-    print(f"--> Graf uložen jako: {filepath}")
+    print(f"--> Figure saved as: {filepath}")

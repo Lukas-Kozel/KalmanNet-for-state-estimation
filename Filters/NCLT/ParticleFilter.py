@@ -36,12 +36,12 @@ class ParticleFilterNCLT:
         self.dist_init = torch.distributions.MultivariateNormal(self.Ex0, self.P0)
         
         if self.N <= 0:
-            raise ValueError("Počet částic (num_particles) musí být kladné celé číslo.")
+            raise ValueError("The number of particles (num_particles) must be a positive integer.")
         
     def _propagate_vectorized(self, particles, Q=None, u_current=None):
         if u_current is not None:
-            # KLÍČOVÁ OPRAVA: Expandování vektoru řízení u_t pro všechny částice!
-            # Pokud přijde u_current o velikosti [4], naklonujeme ho na [100000, 4]
+            
+            # If u_current of size [4] arrives, we clone it to [100000, 4]
             if u_current.dim() == 1:
                 u_batch = u_current.unsqueeze(0).expand(self.N, -1)
             else:
@@ -139,7 +139,7 @@ class ParticleFilterNCLT:
                 # 1. Propagace
                 current_particles = self._propagate_vectorized(current_particles, curr_Q, u_current=u_k)
                 
-                # 2. Likelihood a váhy (pouze pokud měření neobsahuje NaN)
+                # 2. Likelihood and weights (only if the measurement does not contain NaN)
                 y_k = y_seq[k]
                 if not torch.isnan(y_k).any():
                     likelihoods = self._compute_likelihood_vectorized(current_particles, y_k, curr_R)
@@ -156,7 +156,7 @@ class ParticleFilterNCLT:
                         jitter_noise = torch.randn_like(current_particles) * self.jitter
                         current_particles = current_particles + jitter_noise
                         
-                # 4. Ukládání                
+                # 4. Saving                
                 x_est, P_est = self.get_estimate(current_particles, current_weights)
                 x_filtered_history[k] = x_est.squeeze()
                 P_filtered_history[k] = P_est

@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 # 1. KONFIGURACE
 # ==============================================================================
 SESSION_DATE = '2012-01-22'
-DT = 1.0  # Časový krok (1 Hz)
+DT = 1.0  
 
 
 BASE_DIR = os.getcwd()
@@ -17,7 +17,7 @@ SENSOR_DIR = os.path.join(BASE_DIR, 'data', 'sensor', SESSION_DATE)
 OUTPUT_DIR = os.path.join(BASE_DIR, f'preprocessed_NCLT_trajectory-{SESSION_DATE}-angle-update')
 
 def gps_to_local_coord(lat, lon):
-    """Převod Lat/Lon na lokální metry dle NCLT specifikace."""
+    """Conversion of Lat/Lon to local meters according to the NCLT specification."""
     LAT_0 = 0.738167915410646
     LON_0 = -1.46098650670922
     re = 6378135
@@ -33,8 +33,8 @@ def gps_to_local_coord(lat, lon):
 
 def load_csv_as_df(path, cols=None, names=None):
     """
-    Načte CSV, vynutí numerický typ a nastaví první sloupec (čas) jako index.
-    Robustní vůči hlavičkám a komentářům.
+    Loads a CSV, enforces numeric type and sets the first column (time) as the index.
+    Robust against headers and comments.
     """
     if not os.path.exists(path):
         alt_path = os.path.join(os.path.dirname(path), SESSION_DATE, os.path.basename(path))
@@ -43,7 +43,7 @@ def load_csv_as_df(path, cols=None, names=None):
         else:
             raise FileNotFoundError(f"Soubor nenalezen: {path}")
     
-    print(f"  -> Načítám: {os.path.basename(path)}")
+    print(f"  -> Loading: {os.path.basename(path)}")
     
     df = pd.read_csv(path, header=None, usecols=cols, names=names, 
                      on_bad_lines='skip', low_memory=False)
@@ -61,8 +61,8 @@ def load_csv_as_df(path, cols=None, names=None):
     return df
 
 def plot_diagnostics(df, output_dir):
-    """Vykreslí Yaw a Rychlosti pro kontrolu kvality dat."""
-    print("  -> Generuji diagnostické grafy...")
+    """Plots Yaw and Velocities for data quality checking."""
+    print("  -> Generating diagnostic plots...")
     
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
@@ -74,11 +74,11 @@ def plot_diagnostics(df, output_dir):
     # 1. Graf: YAW (Heading)
     axes[0].plot(t_values, df['yaw'].values, label='Yaw (Odometrie)', color='purple', linewidth=1)
     axes[0].set_ylabel('Yaw [rad]')
-    axes[0].set_title('Kontrola úhlu natočení (Yaw)')
+    axes[0].set_title('Yaw Angle Check')
     axes[0].grid(True, linestyle='--', alpha=0.6)
     axes[0].legend()
 
-    # 2. Graf: Rychlost v ose X (Porovnání GT a ODO)
+    # 2. Plot: Velocity in X axis (GT vs ODO comparison)
     axes[1].plot(t_values, df['gt_vx'].values, label='Ground Truth Vx', color='green', alpha=0.7)
     axes[1].plot(t_values, df['odo_vx'].values, label='Odometrie Vx', color='orange', linestyle='--', alpha=0.8)
     axes[1].set_ylabel('Vx [m/s]')
@@ -90,7 +90,7 @@ def plot_diagnostics(df, output_dir):
     axes[2].plot(t_values, df['gt_px'].values, label='GT Poloha X', color='blue')
     axes[2].plot(t_values, df['gps_px'].values, label='GPS Poloha X', color='red', alpha=0.5, linestyle=':')
     axes[2].set_ylabel('Poloha X [m]')
-    axes[2].set_xlabel('Čas [s]')
+    axes[2].set_xlabel('Time [s]')
     axes[2].set_title('Kontrola Polohy X (GT vs GPS)')
     axes[2].grid(True, linestyle='--', alpha=0.6)
     axes[2].legend()
@@ -98,10 +98,10 @@ def plot_diagnostics(df, output_dir):
     plt.tight_layout()
     save_path = os.path.join(output_dir, 'diagnostics_plot.png')
     plt.savefig(save_path, dpi=150)
-    print(f"✅ Graf uložen: {save_path}")
+    print(f"✅ Plot saved: {save_path}")
 
 def process_data():
-    print(f"=== ZPRACOVÁNÍ TRAJEKTORIE {SESSION_DATE} ===")
+    print(f"=== PROCESSING TRAJECTORY {SESSION_DATE} ===")
     
 
     df_gt_raw = load_csv_as_df(GT_FILE, cols=[0, 1, 2], names=['t', 'gt_px', 'gt_py'])
@@ -166,10 +166,10 @@ def process_data():
     # 4. Euler
     df_eul = reindex_and_interp(df_eul_raw, t_grid, angular_cols=['yaw'])
 
-    # --- C. VÝPOČTY (Rychlosti) ---
-    print("  -> Výpočet globálních rychlostí...")
+    # --- C. COMPUTATIONS (Velocities) ---
+    print("  -> Computing global velocities...")
     
-    # Sloučení (Inner join přes index = čas)
+    # Merging (Inner join via index = time)
     df = pd.concat([df_gt, df_gps, df_whl, df_eul], axis=1).dropna()
     
     # 1. GT Rychlost (Derivace pozice)
@@ -183,15 +183,15 @@ def process_data():
 
     plot_diagnostics(df, OUTPUT_DIR)
 
-    # --- E. ČIŠTĚNÍ ---
+    # --- E. CLEANING ---
     cols_of_interest = ['gt_px', 'gt_vx', 'gt_py', 'gt_vy', 
                         'gps_px', 'odo_vx', 'gps_py', 'odo_vy']
     
     df_final = df[cols_of_interest].dropna()
     
-    print(f"  -> Finální počet vzorků: {len(df_final)}")
+    print(f"  -> Final sample count: {len(df_final)}")
 
-    # Příprava Tensorů
+    # Tensor preparation
     X_np = df_final[['gt_px', 'gt_vx', 'gt_py', 'gt_vy']].values.astype(np.float32)
     Y_np = df_final[['gps_px', 'odo_vx', 'gps_py', 'odo_vy']].values.astype(np.float32)
 
@@ -206,15 +206,15 @@ def save_splits(X, Y):
     n_val = int(0.20 * N)
     n_test = N - n_train - n_val
     
-    print(f"  -> Rozdělení: Train={n_train}, Val={n_val}, Test={n_test}")
+    print(f"  -> Split: Train={n_train}, Val={n_val}, Test={n_test}")
     
-    # 1. Nejdříve bereme Test (od začátku do n_test)
+    # 1. First we take Test (from the beginning up to n_test)
     X_test, Y_test   = X[:n_test], Y[:n_test]
     
-    # 2. Potom Train (začíná tam, kde skončil test)
+    # 2. Then Train (starts where test ended)
     X_train, Y_train = X[n_test:n_test+n_train], Y[n_test:n_test+n_train]
     
-    # 3. Zbytek je Val (začíná tam, kde skončil train)
+    # 3. The rest is Val (starts where train ended)
     X_val, Y_val     = X[n_test+n_train:], Y[n_test+n_train:]
     
     train_list = [{'ground_truth': X_train, 'filtered_gps': Y_train}] 
@@ -225,8 +225,8 @@ def save_splits(X, Y):
     torch.save(val_list, os.path.join(OUTPUT_DIR, 'val.pt'))
     torch.save(test_list, os.path.join(OUTPUT_DIR, 'test.pt'))
     
-    print(f"✅ Uloženo do: {OUTPUT_DIR}")
-    print(f"   Formát měření (filtered_gps): [GPS_X, ODO_VX, GPS_Y, ODO_VY]")
+    print(f"✅ Saved to: {OUTPUT_DIR}")
+    print(f"   Measurement format (filtered_gps): [GPS_X, ODO_VX, GPS_Y, ODO_VY]")
 
 if __name__ == "__main__":
     try:

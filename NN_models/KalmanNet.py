@@ -4,9 +4,9 @@ import torch.nn.functional as F
 
 class KalmanNet(nn.Module):
     """
-    KalmanNet Architektura #1 pro nelineární systémy.
-    Tato verze je plně "device-aware" a přijímá zařízení jako
-    parametr v konstruktoru.
+    KalmanNet Architecture #1 for nonlinear systems.
+    This version is fully "device-aware" and accepts the device as
+    a constructor parameter.
     """
     def __init__(self, system_model, device, hidden_size_multiplier=10):
         super(KalmanNet, self).__init__()
@@ -17,18 +17,18 @@ class KalmanNet(nn.Module):
         self.state_dim = system_model.state_dim
         self.obs_dim = system_model.obs_dim
 
-        # Heuristika pro velikost skrytého stavu
+        # Heuristic for the hidden state size
         moments_dim = self.state_dim*self.state_dim + self.obs_dim*self.obs_dim
         self.hidden_dim = moments_dim * hidden_size_multiplier
 
-        # Vstupní dimenze
+        # Input dimensions
         input_dim = self.state_dim + self.obs_dim
 
         self.input_layer = nn.Linear(input_dim, self.hidden_dim)
         self.gru = nn.GRU(self.hidden_dim, self.hidden_dim)
         self.output_layer = nn.Linear(self.hidden_dim, self.state_dim * self.obs_dim)
 
-        # vmap pro nelineární funkce
+        # vmap for nonlinear functions
         self.f_vmap = torch.vmap(self.system_model.f, in_dims=(0,))
         self.h_vmap = torch.vmap(self.system_model.h, in_dims=(0,))
 
@@ -49,7 +49,7 @@ class KalmanNet(nn.Module):
             x_hat_priori = self.f_vmap(x_hat_prev_posterior)
             y_hat = self.h_vmap(x_hat_priori)
             
-            # Výpočet vstupů
+            # Input computation
             innovation = y_t - y_hat
 
 
@@ -58,7 +58,7 @@ class KalmanNet(nn.Module):
 
             nn_input = torch.cat([norm_delta_x, norm_innovation], dim=1)
 
-            # Průchod sítí
+            # Network forward pass
             out_input_layer = self.input_layer(nn_input)
             activated_input = F.relu(out_input_layer) 
             out_gru, h = self.gru(activated_input.unsqueeze(0), h)
@@ -70,7 +70,7 @@ class KalmanNet(nn.Module):
             correction = (K @ innovation.unsqueeze(-1)).squeeze(-1)
             x_hat_posterior = x_hat_priori + correction
 
-            # Příprava pro další krok
+            
             delta_x_hat_update = x_hat_posterior - x_hat_priori
             delta_x_hat_update_prev = delta_x_hat_update.clone()
             x_hat_prev_posterior = x_hat_posterior.clone()

@@ -13,7 +13,7 @@ class LinearKalmanNet(nn.Module):
         # Dimenze vstupu = dim(F4) + dim(F2)
         input_dim = self.state_dim + self.obs_dim
 
-        # Architektura sítě zůstává stejná
+        # Network architecture remains the same
         self.input_layer = nn.Linear(input_dim, hidden_dim)
         self.gru = nn.GRU(input_size=hidden_dim, hidden_size=hidden_dim)
         self.output_layer = nn.Linear(hidden_dim, self.state_dim * self.obs_dim)
@@ -23,10 +23,10 @@ class LinearKalmanNet(nn.Module):
         device = self.input_layer.weight.device
         batch_size, seq_len, _ = y_seq.shape
         
-        # x_hat_prev_posterior odpovídá ˆx_{t-1|t-1}
+        # x_hat_prev_posterior corresponds to ˆx_{t-1|t-1}
         x_hat_prev_posterior = torch.zeros(batch_size, self.state_dim, device=device)
         
-        # delta_x_hat_update_prev odpovídá ∆ˆx_{t-1}
+        # delta_x_hat_update_prev corresponds to ∆ˆx_{t-1}
         delta_x_hat_update_prev = torch.zeros(batch_size, self.state_dim, device=device)
 
 
@@ -41,19 +41,19 @@ class LinearKalmanNet(nn.Module):
             H = self.system_model.H.to(device)
 
             # --- Predikce ---
-            # x_hat_priori odpovídá ˆx_{t|t-1}
+            # x_hat_priori corresponds to ˆx_{t|t-1}
             x_hat_priori = (F @ x_hat_prev_posterior.unsqueeze(-1)).squeeze(-1)
             
-            # y_hat odpovídá ŷ_t
+            # y_hat corresponds to ŷ_t
             y_hat = (H @ x_hat_priori.unsqueeze(-1)).squeeze(-1)
             
-            # --- Výpočet vstupů pro síť (F2 a F4) ---
-            # innovation odpovídá ∆y_t
+            # --- Computing the network inputs (F2 and F4) ---
+            # innovation corresponds to ∆y_t
             innovation = y_t - y_hat
             
             nn_input = torch.cat([delta_x_hat_update_prev, innovation], dim=1)
 
-            # --- Průchod sítí a výpočet Kalmanova zisku ---
+            # --- Network forward pass and Kalman gain computation ---
             out_input_layer = self.input_layer(nn_input)
             out_gru, h = self.gru(out_input_layer.unsqueeze(0), h)
             out_output_layer = self.output_layer(out_gru.squeeze(0))
@@ -63,11 +63,11 @@ class LinearKalmanNet(nn.Module):
             # --- Aktualizace odhadu stavu (Update step) ---
             correction = (K @ innovation.unsqueeze(-1)).squeeze(-1)
             
-            # Finální (posteriori) odhad stavu pro čas t
-            # x_hat_posterior odpovídá ˆx_{t|t}
+            # Final (posterior) state estimate for time t
+            # x_hat_posterior corresponds to ˆx_{t|t}
             x_hat_posterior = x_hat_priori + correction
             
-            # delta_x_hat_update odpovídá ∆ˆx_t = ˆx_{t|t} - ˆx_{t|t-1}
+            # delta_x_hat_update corresponds to ∆ˆx_t = ˆx_{t|t} - ˆx_{t|t-1}
             delta_x_hat_update = x_hat_posterior - x_hat_priori
             
             delta_x_hat_update_prev = delta_x_hat_update.clone()

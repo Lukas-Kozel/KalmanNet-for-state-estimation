@@ -5,23 +5,23 @@ import optuna
 import logging
 import matplotlib.pyplot as plt
 
-# Vypneme logování
+# Disable logging
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 
 # === KONFIGURACE ===
 DATA_DIR = 'preprocessed_NCLT_trajectory-2012-01-22-angle-update'
 DT = 1.0
 SUBSET_LEN = 5000  
-N_TRIALS = 4000     # Dáme tomu hodně pokusů pro jistotu
+N_TRIALS = 4000     # We'll give it plenty of attempts just to be sure
 
-print(f"--- ULTIMÁTNÍ OPTIMALIZACE Q a R ---")
+print(f"--- ULTIMATE OPTIMIZATION OF Q and R ---")
 
-# 1. Načtení dat
+# 1. Data loading
 try:
     train_list = torch.load(os.path.join(DATA_DIR, 'train.pt'))
     gt = train_list[0]['ground_truth'].float().numpy()[:SUBSET_LEN]
     meas = train_list[0]['filtered_gps'].float().numpy()[:SUBSET_LEN]
-    print(f"Data načtena: {len(gt)} kroků.")
+    print(f"Data loaded: {len(gt)} steps.")
 except Exception as e:
     print(f"CHYBA: {e}")
     exit()
@@ -37,9 +37,9 @@ print(f"Base ODO Var: {var_odo_base:.4f}")
 residuals = meas - gt
 cov_matrix_raw = np.cov(residuals, rowvar=False)
 
-# Diagonální variance (to už máš)
-var_gps_base = np.var(residuals[:, [0, 2]]) # Průměr X a Y variance pro GPS
-var_odo_base = np.var(residuals[:, [1, 3]]) # Průměr Vx a Vy variance pro ODO
+# Diagonal variances (you already have that)
+var_gps_base = np.var(residuals[:, [0, 2]]) # Average of X and Y variance for GPS
+var_odo_base = np.var(residuals[:, [1, 3]]) # Average of Vx and Vy variance for ODO
 
 # Korelace mezi Vx a Vy (odometrie)
 # Indexy v residuals: 0=X, 1=Vx, 2=Y, 3=Vy
@@ -48,7 +48,7 @@ corr_vx_vy = cov_vx_vy / np.sqrt(cov_matrix_raw[1,1] * cov_matrix_raw[3,3])
 
 print(f"Korelace chyb rychlosti (Vx vs Vy): {corr_vx_vy:.4f}")
 
-# 3. Rychlá KF implementace (Numpy optimized)
+# 3. Fast KF implementation (Numpy optimized)
 def run_kf_fast(q_std, r_factor_gps, r_factor_odo):
     n = len(meas)
     F = np.array([[1, DT, 0, 0], [0, 1, 0, 0], [0, 0, 1, DT], [0, 0, 0, 1]])
@@ -56,13 +56,13 @@ def run_kf_fast(q_std, r_factor_gps, r_factor_odo):
     
     # Q Matrix
     q_var = q_std**2
-    # Q pro pozici i rychlost (blokově)
+    # Q for position and velocity (block-wise)
     Q_block = np.array([[DT**3/3, DT**2/2], [DT**2/2, DT]]) * q_var
     Q = np.zeros((4, 4))
     Q[0:2, 0:2] = Q_block
     Q[2:4, 2:4] = Q_block
     
-    # R Matrix (Diagonální)
+    # R Matrix (Diagonal)
     # Zde aplikujeme faktory
     R_diag = np.array([
         var_gps_base * r_factor_gps, 
@@ -70,12 +70,12 @@ def run_kf_fast(q_std, r_factor_gps, r_factor_odo):
         var_gps_base * r_factor_gps,
         var_odo_base * r_factor_odo
     ])
-    # Pro rychlost výpočtu nepoužíváme plnou matici R, ale vektor diag
-    # (v update kroku to ale musíme rozepsat nebo použít trik)
+    # For computation speed we don't use the full R matrix, but a diag vector
+    
     R = np.diag(R_diag)
 
     x = gt[0].copy()
-    # P = np.eye(4) * 10.0 # Větší počáteční nejistota
+    # P = np.eye(4) * 10.0 # Larger initial uncertainty
     P = np.diag([10,1,10,1])
     
     mse_sum = 0.0
@@ -89,11 +89,11 @@ def run_kf_fast(q_std, r_factor_gps, r_factor_odo):
         
         # Update
         # S = H P H.T + R
-        S = P + R # Protože H je identita
+        S = P + R # Because H is identity
         
         # K = P H.T S^-1
-        # Protože H je identita, K = P @ S^-1
-        # Použijeme solve pro stabilitu: K = P @ inv(S) -> S.T @ K.T = P.T
+        # Because H is identity, K = P @ S^-1
+        # We use solve for stability: K = P @ inv(S) -> S.T @ K.T = P.T
         try:
             K = np.linalg.solve(S.T, P.T).T
         except np.linalg.LinAlgError:
@@ -114,27 +114,27 @@ def run_kf_fast(q_std, r_factor_gps, r_factor_odo):
 
 # 4. Objective Function
 def objective(trial):
-    # Logaritmické škály pro VŠECHNY parametry
-    # To umožní najít řádově správné nastavení
+    # Logarithmic scales for ALL parameters
+    # This allows finding the order-of-magnitude correct setting
     q_std = trial.suggest_float("q_std", 1e-4, 10.0, log=True)
     
-    # R faktory: od "nevěřím ničemu" (100x) po "věřím absolutně" (0.001x)
+    # R factors: from "I trust nothing" (100x) to "I trust absolutely" (0.001x)
     r_factor_gps = trial.suggest_float("r_factor_gps", 1e-3, 100.0, log=True)
     r_factor_odo = trial.suggest_float("r_factor_odo", 1e-3, 100.0, log=True)
     
     return run_kf_fast(q_std, r_factor_gps, r_factor_odo)
 
-# 5. Spuštění
-print(f"Spouštím {N_TRIALS} pokusů...")
-# Použijeme TPESampler s fixním seedem pro reprodukovatelnost
+# 5. Execution
+print(f"Running {N_TRIALS} trials...")
+# We use TPESampler with a fixed seed for reproducibility
 sampler = optuna.samplers.TPESampler(seed=42) 
 study = optuna.create_study(direction="minimize", sampler=sampler)
 study.optimize(objective, n_trials=N_TRIALS, show_progress_bar=True)
 
-# 6. Výsledky
+# 6. Results
 best = study.best_params
 print("\n" + "="*40)
-print(f"FINÁLNÍ VÝSLEDEK (MSE: {study.best_value:.4f})")
+print(f"FINAL RESULT (MSE: {study.best_value:.4f})")
 print("="*40)
 print(f"q_std: {best['q_std']:.6f}")
 print(f"r_factor_gps: {best['r_factor_gps']:.6f}")
@@ -151,10 +151,10 @@ print(f"q_scale = {final_q_scale:.8f}")
 print("----------------------")
 
 # 7. Vizualizace (Contour Plot)
-# Ukáže nám vztah mezi Q a R_GPS - uvidíš to "údolí"
+# It will show us the relationship between Q and R_GPS - you'll see the "valley"
 try:
     fig = optuna.visualization.plot_contour(study, params=["q_std", "r_factor_gps"])
     fig.write_image("optimization_landscape.png")
-    print("Graf 'optimization_landscape.png' uložen.")
+    print("Plot 'optimization_landscape.png' saved.")
 except:
-    print("Vizualizace se nepodařila (možná chybí plotly/kaleido), ale čísla máš.")
+    print("Visualization failed (maybe plotly/kaleido is missing), but you have the numbers.")

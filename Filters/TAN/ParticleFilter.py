@@ -5,13 +5,13 @@ import copy
 
 class ParticleFilterTAN:
     """
-    Implementace SIR (Sequential Importance Resampling) Particle Filtru.
-    Tato třída se drží logiky a struktury z tutoriálu, ale pro vysoký výkon
-    používá vektorizované operace místo pomalých `for` cyklů.
+    Implementation of the SIR (Sequential Importance Resampling) Particle Filter.
+    This class follows the logic and structure from the tutorial, but for high performance
+    it uses vectorized operations instead of slow `for` loops.
     """
     
     def __init__(self, system_model, num_particles=1000):
-        # ... (tato metoda zůstává beze změny)
+        # ... (this method remains unchanged)
         self.device = system_model.Q.device
         self.f = system_model.f
         self.h = system_model.h
@@ -24,10 +24,10 @@ class ParticleFilterTAN:
         self.particles = None
         self.weights = None
         if self.N <= 0:
-            raise ValueError("Počet částic (num_particles) musí být kladné celé číslo.")
+            raise ValueError("The number of particles (num_particles) must be a positive integer.")
 
     def _propagate_vectorized(self, particles, Q_np, u_current_np=None):
-        """Vektorizovaná predikce pro celý mrak částic."""
+        """Vectorized prediction for the entire particle cloud."""
         particles_torch = torch.from_numpy(particles).float().to(self.device)
         predicted_particles_torch = self.f(particles_torch)
         predicted_particles = predicted_particles_torch.cpu().numpy()
@@ -38,7 +38,7 @@ class ParticleFilterTAN:
             return predicted_particles + noise + u_current_np
 
     def _compute_likelihood_vectorized(self, particles, z_np, R_np):
-        """Vektorizovaný výpočet likelihood pro celý mrak částic."""
+        """Vectorized likelihood computation for the entire particle cloud."""
         particles_torch = torch.from_numpy(particles).float().to(self.device)
         expected_measurements_torch = self.h(particles_torch)
         expected_measurements = expected_measurements_torch.cpu().numpy()
@@ -60,10 +60,10 @@ class ParticleFilterTAN:
         return new_particles
     
     def _normalize_weights(self, weights):
-        """Normalizuje váhy tak, aby jejich součet byl 1. Ekvivalent 'normalize_weights' z reference."""
+        """Normalizes the weights so that their sum is 1. Equivalent of 'normalize_weights' from the reference."""
         sum_weights = np.sum(weights)
         if sum_weights < 1e-15:
-            # print("Varování: Součet vah je téměř nulový. Resetuji na uniformní rozdělení.")
+            # print("Warning: The sum of weights is almost zero. Resetting to a uniform distribution.")
             weights.fill(1.0 / self.N)
         else:
             weights /= sum_weights

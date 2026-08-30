@@ -1,17 +1,17 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F # Správný import pro relu
+import torch.nn.functional as F # Correct import for relu
 
 class KalmanNet_withCovMatrix(nn.Module):
     """
-    KalmanNet_withCovMatrix Architektura #1 pro nelineární systémy.
-    Tato verze je plně "device-aware" a přijímá zařízení jako
-    parametr v konstruktoru.
+    KalmanNet_withCovMatrix Architecture #1 for nonlinear systems.
+    This version is fully "device-aware" and accepts the device as
+    a parameter in the constructor.
     """
     def __init__(self, system_model, device, hidden_size_multiplier=10, dropout_prob=0.2):
         super(KalmanNet_withCovMatrix, self).__init__()
         
-        # Uložíme si zařízení jako atribut třídy
+        # Store the device as a class attribute
         self.device = device
         
         self.system_model = system_model
@@ -20,11 +20,11 @@ class KalmanNet_withCovMatrix(nn.Module):
 
         self.dropout_prob = dropout_prob
 
-        # Heuristika pro velikost skrytého stavu
+        # Heuristic for the hidden state size
         moments_dim = self.state_dim*self.state_dim + self.obs_dim*self.obs_dim
         self.hidden_dim = moments_dim * hidden_size_multiplier
 
-        # Vstupní dimenze
+        # Input dimensions
         input_dim = self.state_dim + self.obs_dim
 
         self.input_layer = nn.Linear(input_dim, self.hidden_dim)
@@ -34,14 +34,14 @@ class KalmanNet_withCovMatrix(nn.Module):
 
         self.dropout_layer2 = nn.Dropout(self.dropout_prob)
 
-        # vmap pro nelineární funkce
+        # vmap for nonlinear functions
         self.f_vmap = torch.vmap(self.system_model.f, in_dims=(0,))
         self.h_vmap = torch.vmap(self.system_model.h, in_dims=(0,))
 
     def forward(self, y_seq):
         """
-        Tato metoda nyní provádí POUZE JEDEN dopředný průchod pro danou dávku.
-        Je ideální pro trénink.
+        This method now performs ONLY ONE forward pass for the given batch.
+        It is ideal for training.
         """
         batch_size, seq_len, _ = y_seq.shape
         
@@ -62,7 +62,7 @@ class KalmanNet_withCovMatrix(nn.Module):
             norm_delta_x = F.normalize(delta_x_hat_update_prev, p=2, dim=1, eps=1e-12)
             nn_input = torch.cat([norm_delta_x, norm_innovation], dim=1)
 
-            # Průchod sítí s dropoutem
+            # Pass through the network with dropout
             out_input_layer = self.input_layer(nn_input)
             activated_input = F.relu(self.dropout_layer1(out_input_layer))
             out_gru, h = self.gru(activated_input.unsqueeze(0), h)
@@ -83,32 +83,32 @@ class KalmanNet_withCovMatrix(nn.Module):
 
     def predict_with_uncertainty(self, y_seq, num_samples=20):
         """
-        Provádí odhad stavu a nejistoty pomocí explicitní Monte Carlo smyčky.
+        Performs state and uncertainty estimation using an explicit Monte Carlo loop.
         """
-        # Ujistíme se, že dropout je aktivní
+        # Make sure dropout is active
         self.train() 
         
         with torch.no_grad():
-            # 1. Posbíráme J různých odhadů do seznamu
+            # 1. Collect J different estimates into a list
             ensemble_runs = []
-            print(f"Spouštím Monte Carlo vzorkování ({num_samples} průchodů)...")
+            print(f"Running Monte Carlo sampling ({num_samples} passes)...")
             for _ in range(num_samples):
-                # V každé iteraci zavoláme jednoduchý forward pass.
-                # Dropout zajistí, že výsledek bude pokaždé mírně jiný.
+                # In each iteration, call a simple forward pass.
+                # Dropout ensures the result will be slightly different each time.
                 one_run = self.forward(y_seq)
                 ensemble_runs.append(one_run)
             
-            # 2. Sestavíme výsledky do jednoho velkého tenzoru
+            # 2. Assemble the results into one large tensor
             # Tvar: (num_samples, batch_size, seq_len, state_dim)
             ensemble_x_hat = torch.stack(ensemble_runs, dim=0)
 
-            # 3. Vypočítáme průměr a kovarianci (tento kód je již správný)
+            # 3. Compute the mean and covariance (this code is already correct)
             x_hat_final = ensemble_x_hat.mean(dim=0)
             diff = ensemble_x_hat - x_hat_final.unsqueeze(0)
             cov_sum = (diff.unsqueeze(-1) @ diff.unsqueeze(-2)).sum(dim=0)
             covariance_final = cov_sum / (num_samples - 1)
         
-        # Vrátíme model do evaluačního módu pro konzistenci
+        # Return the model to evaluation mode for consistency
         self.eval()
         
         return x_hat_final, covariance_final

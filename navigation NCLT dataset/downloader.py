@@ -7,9 +7,9 @@ import shutil
 
 # Konfigurace
 BASE_URL = 'https://s3.us-east-2.amazonaws.com/nclt.perl.engin.umich.edu'
-DATA_ROOT = 'data' # Hlavní složka, kam se to uloží
+DATA_ROOT = 'data' # Main folder where everything will be saved
 
-# Seznam všech datumu v datasetu
+# List of all dates in the dataset
 DATES = [
     '2012-01-08', '2012-01-15', '2012-01-22', '2012-02-02', '2012-02-04',
     '2012-02-05', '2012-02-12', '2012-02-18', '2012-02-19', '2012-03-17',
@@ -20,18 +20,18 @@ DATES = [
 ]
 
 def ensure_dir(path):
-    """Vytvoří složku, pokud neexistuje."""
+    """Creates a folder if it does not exist."""
     if not os.path.exists(path):
         os.makedirs(path)
         print(f"Created directory: {path}")
 
 def download_file(url, dest_folder, file_name):
-    """Stáhne soubor pomocí wget (podporuje navázání přerušeného stahování)."""
+    """Downloads a file using wget (supports resuming interrupted downloads)."""
     ensure_dir(dest_folder)
     dest_path = os.path.join(dest_folder, file_name)
     
     print(f"Downloading {file_name}...")
-    # Používáme wget s -c (continue), -q (quiet/méně spamu), --show-progress
+    # We use wget with -c (continue), -q (quiet/less spam), --show-progress
     cmd = ['wget', '-c', '--show-progress', url, '-O', dest_path]
     
     try:
@@ -42,7 +42,7 @@ def download_file(url, dest_folder, file_name):
         return None
 
 def extract_tar_gz(archive_path, extract_to):
-    """Rozbalí tar.gz archiv do cílové složky."""
+    """Extracts a tar.gz archive into the target folder."""
     print(f"Extracting {os.path.basename(archive_path)} into {extract_to}...")
     ensure_dir(extract_to)
     try:
@@ -56,7 +56,7 @@ def main():
     print(f"=== NCLT Dataset Downloader & Organizer ===")
     print(f"Target directory: {os.path.abspath(DATA_ROOT)}")
     
-    # 1. Příprava hlavních složek
+    # 1. Prepare the main folders
     gt_dir = os.path.join(DATA_ROOT, 'ground_truth')
     sensor_root_dir = os.path.join(DATA_ROOT, 'sensor')
     
@@ -77,34 +77,34 @@ def main():
             print(f"Skipping GT (already exists): {gt_filename}")
 
         # --- B. SENSOR DATA (GPS, IMU, WHEELS) ---
-        # Cílová složka pro tuto session: data/sensor/2012-01-22/
+        # Target folder for this session: data/sensor/2012-01-22/
         session_sensor_dir = os.path.join(sensor_root_dir, date)
         
-        # Kontrola, zda už jsou data rozbalena (zkusíme najít např. gps.csv)
+        # Check whether the data is already extracted (try to find e.g. gps.csv)
         if os.path.exists(os.path.join(session_sensor_dir, 'gps.csv')):
             print(f"Skipping Sensors (already extracted): {date}")
             continue
             
-        # 1. Stáhnout archiv
+        # 1. Download the archive
         sen_filename = f"{date}_sen.tar.gz"
         sen_url = f"{BASE_URL}/sensor_data/{sen_filename}"
         
-        # Stahujeme dočasně do rootu sensor složky
+        # Download temporarily into the root of the sensor folder
         archive_path = download_file(sen_url, sensor_root_dir, sen_filename)
         
         if archive_path and os.path.exists(archive_path):
             # 2. Rozbalit
-            # NCLT archivy jsou "flat" (nemají kořenovou složku), musíme ji vytvořit
+            # NCLT archives are "flat" (they have no root folder), so we must create it
             extract_tar_gz(archive_path, session_sensor_dir)
             
-            # 3. Smazat archiv (volitelné, šetří místo)
+            # 3. Delete the archive (optional, saves space)
             print(f"Cleaning up archive {sen_filename}...")
             os.remove(archive_path)
 
-    print("\n\n✅ Vše hotovo! Dataset je připraven pro preprocess.py.")
+    print("\n\n✅ All done! The dataset is ready for preprocess.py.")
 
 if __name__ == '__main__':
-    # Kontrola, zda máme wget
+    # Check whether we have wget
     if shutil.which('wget') is None:
         print("Error: 'wget' is not installed. Please install it (sudo apt install wget).")
         sys.exit(1)

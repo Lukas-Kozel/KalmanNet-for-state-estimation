@@ -16,8 +16,8 @@ class DynamicSystemTAN:
         self.state_dim, self.obs_dim = state_dim, obs_dim
         self.Q, self.R, self.Ex0, self.P0 = Q.to(self.device), R.to(self.device), Ex0.to(self.device), P0.to(self.device)
 
-        if f is not None and F is not None: raise ValueError("Zadejte buď `f` nebo `F`.")
-        if h is not None and H is not None: raise ValueError("Zadejte buď `h` nebo `H`.")
+        if f is not None and F is not None: raise ValueError("Enter either `f` or `F`.")
+        if h is not None and H is not None: raise ValueError("Enter either `h` or `H`.")
         
         self._f_func = f
         self._h_func = h
@@ -28,8 +28,8 @@ class DynamicSystemTAN:
         self.is_linear_f = (self.F is not None)
         self.is_linear_h = (self.H is not None)
 
-        if not self.is_linear_f and self._f_func is None: raise ValueError("Chybí `f` nebo `F`.")
-        if not self.is_linear_h and self._h_func is None: raise ValueError("Chybí `h` nebo `H`.")
+        if not self.is_linear_f and self._f_func is None: raise ValueError("Missing `f` or `F`.")
+        if not self.is_linear_h and self._h_func is None: raise ValueError("Missing `h` or `H`.")
 
         self.noise_type = noise_type
         if self.noise_type == 'gmm':
@@ -73,12 +73,12 @@ class DynamicSystemTAN:
             return self._h_func(x_batch)
 
     def get_initial_state(self):
-        if self.L_p0 is None: raise RuntimeError("Choleského rozklad P0 selhal.")
+        if self.L_p0 is None: raise RuntimeError("Cholesky decomposition of P0 failed.")
         z = torch.randn(self.state_dim, 1, device=self.device)
         return (self.Ex0.unsqueeze(1) + self.L_p0 @ z).squeeze()
 
     def get_initial_state_input(self):
-        if self.L_p0 is None: raise RuntimeError("Choleského rozklad P0 selhal.")
+        if self.L_p0 is None: raise RuntimeError("Cholesky decomposition of P0 failed.")
         z = torch.randn(self.state_dim, 1, device=self.device)
         return (self.Ex0.unsqueeze(1) + self.L_p0 @ z).squeeze()
 
@@ -108,7 +108,7 @@ class DynamicSystemTAN:
         dim = cov_matrix.shape[0]
         
         if self.noise_type == 'gaussian':
-            if cholesky_factor is None: raise RuntimeError("Choleského rozklad selhal.")
+            if cholesky_factor is None: raise RuntimeError("Cholesky decomposition failed.")
             return cholesky_factor @ torch.randn(num_samples, dim, 1, device=self.device)
         
         elif self.noise_type == 'gmm':
@@ -123,7 +123,7 @@ class DynamicSystemTAN:
             return torch.where(is_outlier, noise_outlier, noise_normal)
         
         else:
-            raise ValueError(f"Neznámý typ šumu: '{self.noise_type}'")
+            raise ValueError(f"Unknown noise type: '{self.noise_type}'")
         
     def calculate_terrain_gradient(self, x_in):
         with torch.enable_grad():

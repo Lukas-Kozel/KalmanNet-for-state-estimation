@@ -3,8 +3,8 @@ import torch
 class UnscentedKalmanFilterTAN:
     def __init__(self, system_model):
         """
-        Inicializace zjednodušeného, ale robustního a vektorizovaného UKF.
-        Tato verze nepoužívá parametry alpha, beta, kappa.
+        Initialization of a simplified, yet robust and vectorized UKF.
+        This version does not use the alpha, beta, kappa parameters.
         """
         self.device = system_model.Q.device
         
@@ -24,7 +24,7 @@ class UnscentedKalmanFilterTAN:
         self.x_filtered_prev = None
         self.P_filtered_prev = None
 
-        # Interní stav pro online použití: predikce pro aktuální krok
+        
         self.x_predict_current = None
         self.P_predict_current = None
 
@@ -32,7 +32,7 @@ class UnscentedKalmanFilterTAN:
 
     def reset(self, Ex0, P0):
         """
-        Inicializuje nebo resetuje interní stav filtru pro online použití.
+        Initializes or resets the internal filter state for online use.
         """
         self.x_predict_current = Ex0.clone().detach().reshape(self.state_dim, 1)
         self.P_predict_current = P0.clone().detach()
@@ -40,24 +40,24 @@ class UnscentedKalmanFilterTAN:
 
     def _get_sigma_points(self, x_mean, P):
         """
-        Vypočítá sigma body na základě průměru a kovariance.
+        Computes sigma points based on the mean and covariance.
         """
         if not torch.all(torch.isfinite(P)):
             raise ValueError("Covariance matrix P contains NaNs or Infs!")
 
         try:
-            # Přidání malého jitteru pro numerickou stabilitu
+            # Adding a small jitter for numerical stability
             jitter = torch.eye(self.state_dim, device=self.device) * 1e-6
             S = torch.linalg.cholesky(P + jitter, upper=False)
         except torch.linalg.LinAlgError:
-            # print("Cholesky selhal! Používám vlastní odmocninu matice.")
+            # print("Cholesky failed! Using custom matrix square root.")
             eigvals, eigvecs = torch.linalg.eigh(P)
             S = eigvecs @ torch.diag(torch.sqrt(eigvals.clamp(min=0))) @ eigvecs.T
 
         # scale = torch.sqrt(torch.tensor(self.state_dim, device=self.device, dtype=torch.float32))
         n = self.state_dim
         scale = torch.sqrt(torch.tensor((n * 2 + 1) / 2.0, device=self.device, dtype=torch.float32))
-        # Vytvoření sigma bodů (x_mean musí být sloupcový vektor [state_dim, 1])
+        # Creating sigma points (x_mean must be a column vector [state_dim, 1])
         sigma_points = x_mean.repeat(1, self.n_sigma_points)
         sigma_points[:, 1:self.state_dim + 1] += scale * S
         sigma_points[:, self.state_dim + 1:] -= scale * S
@@ -65,30 +65,30 @@ class UnscentedKalmanFilterTAN:
         return sigma_points
 
     def predict_step(self, x_filtered, P_filtered, u_current=None):
-        # Krok 1: Výpočet sigma bodů (zůstává stejný)
-        # sigma_points má tvar [state_dim, n_sigma_points]
+        
+        # sigma_points has shape [state_dim, n_sigma_points]
         sigma_points = self._get_sigma_points(x_filtered, P_filtered)
         
-        # Krok 2: Propagace sigma bodů přes deterministickou část dynamiky 'f'
-        # self.f očekává dávku [batch_size, state_dim], proto musíme transponovat
-        # propagated_points má tvar [n_sigma_points, state_dim]
+        
+        # self.f expects a batch [batch_size, state_dim], so we must transpose
+        # propagated_points has shape [n_sigma_points, state_dim]
         propagated_points_f = self.f(sigma_points.T)
 
-        # ### ZDE JE KLÍČOVÁ OPRAVA ###
-        # Krok 3: Přičtení vstupu 'u' ke KAŽDÉMU propagovanému bodu
+        
+        
         if u_current is not None:
-            # u_current má tvar [state_dim]. Rozšíříme ho, aby se dal sečíst s maticí.
-            # PyTorch se postará o broadcasting (rozšíření) u_current na všechny řádky.
+            # u_current has shape [state_dim]. We expand it so it can be added to the matrix.
+            # PyTorch will handle broadcasting (expansion) of u_current across all rows.
             propagated_points = propagated_points_f + u_current
         else:
             propagated_points = propagated_points_f
 
-        # Zpětná transpozice pro další výpočty
-        # propagated_points má nyní tvar [state_dim, n_sigma_points]
+        # Transposing back for further computations
+        # propagated_points now has shape [state_dim, n_sigma_points]
         propagated_points = propagated_points.T
         
-        # Krok 4: Výpočet predikovaného stavu a kovariance (Unscented Transform)
-        # (Tato část je již správně)
+        
+        # (This part is already correct)
         x_predict = (propagated_points @ self.weights).unsqueeze(1)
         diff = propagated_points - x_predict
         P_predict = (diff * self.weights) @ diff.T + self.Q
@@ -121,8 +121,8 @@ class UnscentedKalmanFilterTAN:
 
     def step(self, y_t, u_t=None):
         """
-        Provede jeden kompletní krok filtrace pro ONLINE použití.
-        Vrací nejlepší odhad pro aktuální čas 't'.
+        Performs one complete filtering step for ONLINE use.
+        Returns the best estimate for the current time 't'.
         """
         x_filtered, P_filtered, _, _ = self.update_step(self.x_predict_current, self.P_predict_current, y_t)
 
@@ -139,8 +139,8 @@ class UnscentedKalmanFilterTAN:
 
     def process_sequence(self, y_seq, u_sequence=None, Ex0=None, P0=None):
         """
-        Zpracuje celou sekvenci měření.
-        Tato metoda je nyní plně kompatibilní s vaším vyhodnocovacím skriptem.
+        Processes the entire measurement sequence.
+        This method is now fully compatible with your evaluation script.
         """
         x_est = Ex0.clone().detach().reshape(self.state_dim, 1)
         P_est = P0.clone().detach()
